@@ -18,6 +18,7 @@ class TimeEntry(SoftDeleteModel):
     duration = models.IntegerField(default=0)
     billable = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_timeentry')
 
     def __str__(self):
         return f"{self.user} - {self.project}"

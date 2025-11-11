@@ -15,6 +15,7 @@ class TimeEntryApproval(models.Model):
     notes = models.TextField(blank=True)
     total_hours = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_approvals')
 
 class TimeEntryApprovalItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -22,3 +23,5 @@ class TimeEntryApprovalItem(models.Model):
     time_entry = models.ForeignKey(TimeEntry, on_delete=models.CASCADE)
     approved = models.BooleanField(default=True)
     comments = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_items')

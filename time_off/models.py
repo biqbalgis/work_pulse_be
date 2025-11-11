@@ -10,6 +10,7 @@ class TimeOffType(models.Model):
     requires_approval = models.BooleanField(default=True)
     color = models.CharField(max_length=7, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_timeofftypes')
 
 class TimeOffRequest(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -24,3 +25,4 @@ class TimeOffRequest(models.Model):
     reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_timeoffs')
     reviewer_comment = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_timeoffsrequests')

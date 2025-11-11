@@ -9,7 +9,6 @@ class Workspace(SoftDeleteModel):
     name = models.CharField(max_length=255)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_workspaces')
     created_at = models.DateTimeField(auto_now_add=True)
-
     def __str__(self):
         return self.name
 
@@ -25,6 +24,8 @@ class WorkspaceMember(models.Model):
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='user')
     joined_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_workspacesmembers')
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         unique_together = ('workspace', 'user')
