@@ -1,8 +1,10 @@
 from django.db import models
 from users.models import User
 from workspaces.models import Workspace
+import uuid
 
 class TimeOffType(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     name = models.CharField(max_length=100)
     requires_approval = models.BooleanField(default=True)
@@ -10,6 +12,7 @@ class TimeOffType(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 class TimeOffRequest(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     type = models.ForeignKey(TimeOffType, on_delete=models.CASCADE)

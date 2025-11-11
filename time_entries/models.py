@@ -4,8 +4,10 @@ from workspaces.models import Workspace
 from projects.models import Project
 from tasks.models import Task
 from users.models import User
+import uuid
 
 class TimeEntry(SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True)

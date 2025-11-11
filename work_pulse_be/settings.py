@@ -70,7 +70,12 @@ DATABASES = {
     }
 }
 
-AUTH_USER_MODEL = 'users.User'
+AUTH_USER_MODEL = "users.User"
+
+# Ensure Django uses email for authentication everywhere
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+]
 
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'

@@ -3,8 +3,10 @@ from core.models import SoftDeleteModel
 from workspaces.models import Workspace
 from clients.models import Client
 from users.models import User
+import uuid
 
 class Project(SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True)
     name = models.CharField(max_length=255)

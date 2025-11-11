@@ -2,8 +2,10 @@ from django.db import models
 from users.models import User
 from workspaces.models import Workspace
 from time_entries.models import TimeEntry
+import uuid
 
 class TimeEntryApproval(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     start_date = models.DateField()
@@ -15,6 +17,7 @@ class TimeEntryApproval(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 class TimeEntryApprovalItem(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     approval = models.ForeignKey(TimeEntryApproval, on_delete=models.CASCADE, related_name='items')
     time_entry = models.ForeignKey(TimeEntry, on_delete=models.CASCADE)
     approved = models.BooleanField(default=True)
