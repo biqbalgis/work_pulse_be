@@ -17,7 +17,7 @@ class TimeOffTypeViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         workspace = get_user_primary_workspace(self.request.user)
         instance = serializer.save(workspace=workspace)
-        log_activity(self.request.user, "CREATE", "TimeOffType", instance.id)
+        log_activity(self.request.user, "CREATE", "TimeOffType", instance.id,request=self.request)
 
 
 class TimeOffRequestViewSet(viewsets.ModelViewSet):
@@ -32,4 +32,4 @@ class TimeOffRequestViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         workspace = get_user_primary_workspace(self.request.user)
         instance = serializer.save(workspace=workspace, user=self.request.user)
-        log_activity(self.request.user, "CREATE", "TimeOffRequest", instance.id)
+        log_activity(self.request.user, "CREATE", "TimeOffRequest", instance.id,request=self.request)

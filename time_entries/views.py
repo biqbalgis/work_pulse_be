@@ -22,8 +22,8 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         if not member:
             raise serializers.ValidationError("User is not part of any workspace.")
         instance = serializer.save(user=user, workspace=member.workspace)
-        log_activity(user, "CREATE", "TimeEntry", instance.id)
+        log_activity(user, "CREATE", "TimeEntry", instance.id,request=self.request)
 
     def perform_destroy(self, instance):
-        log_activity(self.request.user, "DELETE", "TimeEntry", instance.id)
+        log_activity(self.request.user, "DELETE", "TimeEntry", instance.id,request=self.request)
         instance.delete()

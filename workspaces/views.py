@@ -10,10 +10,10 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         instance = serializer.save(created_by=self.request.user)
-        log_activity(self.request.user, "CREATE", "Workspace", instance.id)
+        log_activity(self.request.user, "CREATE", "Workspace", instance.id,request=self.request)
 
     def perform_destroy(self, instance):
-        log_activity(self.request.user, "DELETE", "Workspace", instance.id)
+        log_activity(self.request.user, "DELETE", "Workspace", instance.id,request=self.request)
         instance.delete()
 
 class WorkspaceMemberViewSet(viewsets.ModelViewSet):

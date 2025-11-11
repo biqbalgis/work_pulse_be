@@ -29,7 +29,7 @@ class UserViewSet(viewsets.ModelViewSet):
         workspace = get_user_primary_workspace(user)
         new_user = serializer.save(is_active=True)
         WorkspaceMember.objects.create(workspace=workspace, user=new_user, role='user')
-        log_activity(user, "CREATE", "User", new_user.id)
+        log_activity(user, "CREATE", "User", new_user.id,request=self.request)
 
     # ✅ New endpoint to deactivate or activate a user
     @action(detail=True, methods=['post'], url_path='toggle-active')
@@ -39,7 +39,7 @@ class UserViewSet(viewsets.ModelViewSet):
         user.save()
 
         status_str = "activated" if user.is_active else "deactivated"
-        log_activity(request.user, status_str.upper(), "User", user.id)
+        log_activity(request.user, status_str.upper(), "User", user.id,request=self.request)
 
         # 🚫 Blacklist all JWT tokens for this user
         if not user.is_active:

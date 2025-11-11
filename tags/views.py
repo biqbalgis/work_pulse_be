@@ -17,4 +17,4 @@ class TagViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         workspace = get_user_primary_workspace(self.request.user)
         instance = serializer.save(workspace=workspace)
-        log_activity(self.request.user, "CREATE", "Tag", instance.id)
+        log_activity(self.request.user, "CREATE", "Tag", instance.id,request=self.request)

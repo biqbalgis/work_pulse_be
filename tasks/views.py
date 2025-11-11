@@ -19,8 +19,8 @@ class TaskViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         instance = serializer.save()
-        log_activity(user, "CREATE", "Task", instance.id)
+        log_activity(user, "CREATE", "Task", instance.id,request=self.request)
 
     def perform_destroy(self, instance):
-        log_activity(self.request.user, "DELETE", "Task", instance.id)
+        log_activity(self.request.user, "DELETE", "Task", instance.id,request=self.request)
         instance.delete()

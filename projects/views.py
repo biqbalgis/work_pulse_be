@@ -26,8 +26,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 raise serializers.ValidationError("User is not a member of any workspace.")
             workspace = member.workspace
         instance = serializer.save(workspace=workspace, created_by=user)
-        log_activity(user, "CREATE", "Project", instance.id)
+        log_activity(user, "CREATE", "Project", instance.id, request=self.request)
+
 
     def perform_destroy(self, instance):
-        log_activity(self.request.user, "DELETE", "Project", instance.id)
+        log_activity(self.request.user, "DELETE", "Project", instance.id, request=self.request)
         instance.delete()

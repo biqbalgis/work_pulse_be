@@ -22,8 +22,8 @@ class ClientViewSet(viewsets.ModelViewSet):
         if not member:
             raise serializers.ValidationError("User is not part of any workspace.")
         instance = serializer.save(workspace=member.workspace)
-        log_activity(user, "CREATE", "Client", instance.id)
+        log_activity(user, "CREATE", "Client", instance.id, request=self.request)
 
     def perform_destroy(self, instance):
-        log_activity(self.request.user, "DELETE", "Client", instance.id)
+        log_activity(self.request.user, "DELETE", "Client", instance.id,request=self.request)
         instance.delete()

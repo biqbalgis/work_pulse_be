@@ -18,4 +18,4 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         user = self.request.user
         workspace = get_user_primary_workspace(user)
         instance = serializer.save(workspace=workspace, reviewed_by=user)
-        log_activity(user, "CREATE", "TimeEntryApproval", instance.id)
+        log_activity(user, "CREATE", "TimeEntryApproval", instance.id, request=self.request)
