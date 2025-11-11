@@ -1,0 +1,35 @@
+from rest_framework import viewsets, permissions, serializers
+from .models import TimeOffType, TimeOffRequest
+from .serializers import TimeOffTypeSerializer, TimeOffRequestSerializer
+from workspaces.permissions import IsWorkspaceManager, IsWorkspaceUser, IsSuperUser
+from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
+from core.utils.logger import log_activity
+
+class TimeOffTypeViewSet(viewsets.ModelViewSet):
+    serializer_class = TimeOffTypeSerializer
+    permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
+
+    def get_queryset(self):
+        user = self.request.user
+        workspace_ids = get_user_workspace_ids(user)
+        return TimeOffType.objects.filter(workspace_id__in=workspace_ids)
+
+    def perform_create(self, serializer):
+        workspace = get_user_primary_workspace(self.request.user)
+        instance = serializer.save(workspace=workspace)
+        log_activity(self.request.user, "CREATE", "TimeOffType", instance.id)
+
+
+class TimeOffRequestViewSet(viewsets.ModelViewSet):
+    serializer_class = TimeOffRequestSerializer
+    permission_classes = [permissions.IsAuthenticated, IsWorkspaceUser | IsSuperUser]
+
+    def get_queryset(self):
+        user = self.request.user
+        workspace_ids = get_user_workspace_ids(user)
+        return TimeOffRequest.objects.filter(workspace_id__in=workspace_ids)
+
+    def perform_create(self, serializer):
+        workspace = get_user_primary_workspace(self.request.user)
+        instance = serializer.save(workspace=workspace, user=self.request.user)
+        log_activity(self.request.user, "CREATE", "TimeOffRequest", instance.id)
