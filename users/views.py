@@ -8,7 +8,7 @@ from workspaces.models import WorkspaceMember
 from .serializers import UserSerializer
 from workspaces.permissions import IsWorkspaceManager, IsSuperUser
 from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
-from core.utils.logger import log_activity
+from core.utils.logger import log_activity, log_error
 
 User = get_user_model()
 
@@ -49,6 +49,7 @@ class UserViewSet(viewsets.ModelViewSet):
                     BlacklistedToken.objects.get_or_create(token=token)
                 tokens.delete()  # Remove all OutstandingToken records
             except Exception as e:
+                log_error(self.request, e, {"context": f"Error while blacklisting tokens for {user}: {e}"})
                 print(f"Error while blacklisting tokens for {user}: {e}")
 
         return Response(
