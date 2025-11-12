@@ -1,31 +1,69 @@
 from rest_framework import permissions
 from workspaces.models import WorkspaceMember
 
+def get_user_role_in_workspace(user, workspace=None):
+    """Helper function to get a user's role within a workspace."""
+    if not user or not user.is_authenticated:
+        return None
+
+    if user.is_superuser:
+        return 'superuser'
+
+    query = WorkspaceMember.objects.filter(user=user)
+    if workspace:
+        query = query.filter(workspace=workspace)
+
+    member = query.first()
+    return member.role if member else None
+
+
 class IsSuperUser(permissions.BasePermission):
-    """Allow full access to Django superusers."""
+    """Full access for Django superusers."""
     def has_permission(self, request, view):
         return request.user and request.user.is_superuser
 
 
 class IsWorkspaceAdmin(permissions.BasePermission):
-    """Allows access only to workspace admins."""
+    """Allows access only to admins within their workspace."""
     def has_permission(self, request, view):
-        return WorkspaceMember.objects.filter(
-            user=request.user, role='admin'
-        ).exists()
+        user = request.user
+        if user.is_superuser:
+            return True
+
+        workspace = getattr(view, 'workspace', None) or getattr(user, 'primary_workspace', None)
+        if not workspace:
+            return False
+
+        return WorkspaceMember.objects.filter(user=user, workspace=workspace, role='admin').exists()
 
 
 class IsWorkspaceManager(permissions.BasePermission):
-    """Allows access to admins only."""
+    """Allows access to managers or admins within the workspace."""
     def has_permission(self, request, view):
+        user = request.user
+        if user.is_superuser:
+            return True
+
+        workspace = getattr(view, 'workspace', None) or getattr(user, 'primary_workspace', None)
+        if not workspace:
+            return False
+
         return WorkspaceMember.objects.filter(
-            user=request.user, role__in=['admin']
+            user=user, workspace=workspace, role__in=['manager', 'admin']
         ).exists()
 
 
 class IsWorkspaceUser(permissions.BasePermission):
-    """Allows access to all workspace members (user, manager, admin)."""
+    """Allows access to all workspace members (admin, manager, user)."""
     def has_permission(self, request, view):
+        user = request.user
+        if user.is_superuser:
+            return True
+
+        workspace = getattr(view, 'workspace', None) or getattr(user, 'primary_workspace', None)
+        if not workspace:
+            return False
+
         return WorkspaceMember.objects.filter(
-            user=request.user
+            user=user, workspace=workspace, role__in=['user', 'manager', 'admin']
         ).exists()

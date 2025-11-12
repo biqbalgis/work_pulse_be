@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions, serializers, status
+from rest_framework import viewsets, permissions, serializers, status, generics
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.contrib.auth import get_user_model
@@ -6,8 +6,8 @@ from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, Bl
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from workspaces.models import WorkspaceMember, Workspace
-from .serializers import UserSerializer, EmailTokenObtainPairSerializer
-from workspaces.permissions import IsWorkspaceManager, IsSuperUser
+from .serializers import UserSerializer, EmailTokenObtainPairSerializer, RegisterSerializer
+from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser
 from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
 from core.utils.logger import log_activity, log_error
 
@@ -15,7 +15,7 @@ User = get_user_model()
 
 class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
+    permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
     lookup_field = 'id'
     def get_queryset(self):
         user = self.request.user
@@ -34,6 +34,7 @@ class UserViewSet(viewsets.ModelViewSet):
         workspace = None
         if creator.is_superuser:
             # Superuser can manually assign workspace via payload
+
             workspace_id = self.request.data.get('workspace')
             if workspace_id:
                 workspace = Workspace.objects.filter(id=workspace_id).first()
@@ -94,5 +95,16 @@ class UserViewSet(viewsets.ModelViewSet):
 
 
 class EmailLoginView(TokenObtainPairView):
-    """Login endpoint that accepts email instead of username."""
     serializer_class = EmailTokenObtainPairSerializer
+
+class RegisterView(generics.CreateAPIView):
+    serializer_class = RegisterSerializer
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]  # superuser/admins can create
+
+    def perform_create(self, serializer):
+        user = self.request.user if self.request.user.is_authenticated else None
+        new_user = serializer.save()
+        if user:
+            log_activity(user, "CREATE", "User", new_user.id, request=self.request)
+        else:
+            log_activity(new_user, "REGISTER", "User", new_user.id, request=self.request)

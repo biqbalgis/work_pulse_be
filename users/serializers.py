@@ -2,7 +2,7 @@ from django.contrib.auth import authenticate
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from workspaces.models import Workspace
+from workspaces.models import Workspace, WorkspaceMember
 from .models import User
 
 class UserSerializer(serializers.ModelSerializer):
@@ -14,7 +14,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "email", "first_name", "last_name", "is_active", "workspace"]
+        fields = ["id", "email", "first_name", "last_name", "is_active"]
         read_only_fields = ["id", "is_active"]
 
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -33,27 +33,85 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         if not user.is_active:
             raise serializers.ValidationError("This account is deactivated.")
 
-        # Get primary workspace info
-        workspace = user.primary_workspace
+        # 🔍 Find workspace membership
+        memberships = WorkspaceMember.objects.filter(user=user)
+        workspace_data = None
         role = None
-        if workspace:
-            member = WorkspaceMember.objects.filter(user=user, workspace=workspace).first()
-            role = member.role if member else None
 
+        if memberships.exists():
+            # Pick the first workspace for now (support multiple later if needed)
+            membership = memberships.first()
+            workspace = membership.workspace
+            role = membership.role
+
+            workspace_data = {
+                "id": str(workspace.id),
+                "name": workspace.name,
+                "role": role,
+            }
+        else:
+            # Global or superuser (no workspace)
+            workspace_data = {
+                "id": None,
+                "name": None,
+                "role": "superuser" if user.is_superuser else None,
+            }
+
+        # ✅ Generate JWT tokens
         refresh = self.get_token(user)
+
         data = {
             'refresh': str(refresh),
             'access': str(refresh.access_token),
             'user': {
-                'id': str(user.id),  # in case of UUIDs
+                'id': str(user.id),
                 'email': user.email,
-                # 'first_name': user.first_name,
-                # 'last_name': user.last_name,
-                'primary_workspace': {
-                    'id': str(workspace.id) if workspace else None,
-                    'name': workspace.name if workspace else None,
-                    'role': role,
-                }
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'workspace': workspace_data,
             },
         }
         return data
+
+
+class RegisterSerializer(serializers.ModelSerializer):
+    workspace_id = serializers.UUIDField(required=False, allow_null=True)
+    workspace_name = serializers.CharField(required=False, allow_blank=True)
+    role = serializers.ChoiceField(
+        choices=[('admin', 'Admin'), ('manager', 'Manager'), ('user', 'User')],
+        default='user'
+    )
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'email', 'first_name', 'last_name', 'password',
+            'workspace_id', 'workspace_name', 'role'
+        ]
+        extra_kwargs = {'password': {'write_only': True}}
+
+    def create(self, validated_data):
+        workspace_id = validated_data.pop('workspace_id', None)
+        role = validated_data.pop('role', 'user')
+
+        email = validated_data.get('email').strip().lower()
+        validated_data['username'] = email
+
+        request_user = self.context['request'].user if self.context.get('request') else None
+
+        # 🧩 CASE 1: Superuser creating a global user (no workspace link)
+        if request_user and request_user.is_superuser:
+            user = User.objects.create_user(**validated_data)
+            return user
+
+        # 🧩 CASE 2: Workspace Admin / Manager creating user within a workspace
+        workspace = None
+        if workspace_id:
+            workspace = Workspace.objects.filter(id=workspace_id).first()
+
+        if not workspace:
+            raise serializers.ValidationError("Workspace ID or name is required for non-superuser registration.")
+
+        user = User.objects.create_user(**validated_data, primary_workspace=workspace)
+        WorkspaceMember.objects.create(workspace=workspace, user=user, role=role)
+        return user

@@ -1,13 +1,14 @@
 from rest_framework import viewsets, permissions, serializers
+
+from workspaces.permissions import IsWorkspaceManager
 from .models import TimeEntryApproval, TimeEntryApprovalItem
 from .serializers import TimeEntryApprovalSerializer
-from workspaces.permissions import IsWorkspaceManager, IsSuperUser
 from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
 from core.utils.logger import log_activity
 
 class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
     serializer_class = TimeEntryApprovalSerializer
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
+    permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager]
 
     def get_queryset(self):
         user = self.request.user

@@ -1,13 +1,13 @@
 from rest_framework import viewsets, permissions, serializers
 from .models import TimeOffType, TimeOffRequest
 from .serializers import TimeOffTypeSerializer, TimeOffRequestSerializer
-from workspaces.permissions import IsWorkspaceManager, IsWorkspaceUser, IsSuperUser
+from workspaces.permissions import IsWorkspaceUser
 from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
 from core.utils.logger import log_activity
 
 class TimeOffTypeViewSet(viewsets.ModelViewSet):
     serializer_class = TimeOffTypeSerializer
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
+    permission_classes = [permissions.IsAuthenticated, IsWorkspaceUser]
 
     def get_queryset(self):
         user = self.request.user
@@ -22,7 +22,7 @@ class TimeOffTypeViewSet(viewsets.ModelViewSet):
 
 class TimeOffRequestViewSet(viewsets.ModelViewSet):
     serializer_class = TimeOffRequestSerializer
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceUser | IsSuperUser]
+    permission_classes = [permissions.IsAuthenticated, IsWorkspaceUser]
 
     def get_queryset(self):
         user = self.request.user

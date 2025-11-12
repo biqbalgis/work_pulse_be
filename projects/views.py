@@ -3,11 +3,11 @@ from .models import Project
 from .serializers import ProjectSerializer
 from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
-from workspaces.permissions import IsWorkspaceManager, IsSuperUser
+from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser
 
 class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
+    permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
 
     def get_queryset(self):
         user = self.request.user

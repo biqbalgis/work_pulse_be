@@ -5,6 +5,7 @@ class WorkspaceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Workspace
         fields = ['id', 'name', 'created_by', 'created_at']
+        read_only_fields = ['id', 'created_by', 'created_at']
 
 class WorkspaceMemberSerializer(serializers.ModelSerializer):
     class Meta:
