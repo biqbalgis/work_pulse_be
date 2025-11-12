@@ -1,20 +1,24 @@
 from rest_framework import viewsets, permissions
+from django.db.models import Prefetch
 from .models import Workspace, WorkspaceMember
 from .serializers import WorkspaceSerializer, WorkspaceMemberSerializer
 from core.utils.logger import log_activity
 
+
 class WorkspaceViewSet(viewsets.ModelViewSet):
-    queryset = Workspace.objects.all().order_by('-created_at')
     serializer_class = WorkspaceSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        base_queryset = Workspace.objects.all().prefetch_related(
+            Prefetch('members', queryset=WorkspaceMember.objects.select_related('user'))
+        ).order_by('-created_at')
+
         user = self.request.user
         if user.is_superuser:
-            return Workspace.objects.all().order_by('-created_at')
-        return Workspace.objects.filter(members__user=user).order_by('-created_at')
+            return base_queryset
+        return base_queryset.filter(members__user=user)
 
-        return queryset.none()
     def perform_create(self, serializer):
         user = self.request.user
         workspace = serializer.save(created_by=user)
@@ -27,6 +31,7 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
         )
         log_activity(user, "CREATE", "Workspace", workspace.id, request=self.request)
         return workspace
+
 
 class WorkspaceMemberViewSet(viewsets.ModelViewSet):
     queryset = WorkspaceMember.objects.all()
