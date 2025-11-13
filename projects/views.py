@@ -1,9 +1,15 @@
 from rest_framework import viewsets, permissions, serializers
-from .models import Project
-from .serializers import ProjectSerializer
+from rest_framework.exceptions import ValidationError
+
+from .models import Project, ProjectRole, UserProjectRole, JobTitle
+from .serializers import ProjectSerializer, ProjectRoleSerializer, UserProjectRoleSerializer, JobTitleSerializer
 from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser
+
+def get_user_workspace(request):
+    member = WorkspaceMember.objects.filter(user=request.user).first()
+    return member.workspace if member else None
 
 class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
@@ -31,4 +37,54 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         log_activity(self.request.user, "DELETE", "Project", instance.id, request=self.request)
+        instance.delete()
+
+class JobTitleViewSet(viewsets.ModelViewSet):
+    queryset = JobTitle.objects.all()
+    serializer_class = JobTitleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        log_activity(self.request.user, "CREATE", "JobTitle", instance.id, request=self.request)
+
+
+class ProjectRoleViewSet(viewsets.ModelViewSet):
+    serializer_class = ProjectRoleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        workspace = get_user_workspace(self.request)
+        return ProjectRole.objects.filter(project__workspace=workspace)
+
+    def perform_create(self, serializer):
+        project_role = serializer.save()
+        log_activity(self.request.user, "CREATE", "ProjectRole", project_role.id, request=self.request)
+
+    def perform_destroy(self, instance):
+        log_activity(self.request.user, "DELETE", "ProjectRole", instance.id, request=self.request)
+        instance.delete()
+
+
+class UserProjectRoleViewSet(viewsets.ModelViewSet):
+    serializer_class = UserProjectRoleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        workspace = get_user_workspace(self.request)
+        return UserProjectRole.objects.filter(project__workspace=workspace)
+
+    def perform_create(self, serializer):
+        user = serializer.validated_data.get("user")
+        project = serializer.validated_data.get("project")
+
+        # Ensure user belongs to same workspace
+        if not WorkspaceMember.objects.filter(user=user, workspace=project.workspace).exists():
+            raise ValidationError("User does not belong to this workspace.")
+
+        upr = serializer.save()
+        log_activity(self.request.user, "CREATE", "UserProjectRole", upr.id, request=self.request)
+
+    def perform_destroy(self, instance):
+        log_activity(self.request.user, "DELETE", "UserProjectRole", instance.id, request=self.request)
         instance.delete()
