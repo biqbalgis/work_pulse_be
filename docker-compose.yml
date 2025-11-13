@@ -12,19 +12,24 @@ services:
     depends_on:
       - wait-for-db
     command: >
-      sh -c "python manage.py migrate &&
-             gunicorn work_pulse_be.wsgi:application --bind 0.0.0.0:8000"
+      sh -c "
+        echo Running migrations... &&
+        python manage.py migrate &&
+        echo Starting Gunicorn... &&
+        gunicorn work_pulse_be.wsgi:application --bind 0.0.0.0:8000
+      "
 
-  # Fake service whose only job is to wait for external DB to accept connections
   wait-for-db:
     image: alpine
+    container_name: work_pulse_be-wait-for-db
+    env_file:
+      - .env
     command: >
-      /bin/sh -c "
+      sh -c "
+        apk add --no-cache netcat-openbsd;
         echo Waiting for database...;
         while ! nc -z $DB_HOST $DB_PORT; do
           sleep 2;
         done;
         echo Database is up;
       "
-    env_file:
-      - .env

@@ -3,10 +3,8 @@
 # ===========================
 FROM python:3.12-slim
 
-# Prevent Python from buffering output
 ENV PYTHONUNBUFFERED=1
 
-# Set working directory
 WORKDIR /app
 
 # Install system dependencies
@@ -16,21 +14,22 @@ RUN apt-get update && apt-get install -y \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
+# Copy requirements first (layer caching)
 COPY requirements.txt /app/
 
-# Install Python dependencies
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
 
-# Copy project into container
+# Create static directory (prevents collectstatic crash)
+RUN mkdir -p /app/staticfiles
+
+# Copy project
 COPY . /app/
 
-# Collect static files (optional for production)
+# Collect static files (production safe)
 RUN python manage.py collectstatic --noinput
 
-# Expose Django app port (Gunicorn)
 EXPOSE 8000
 
-# Start Gunicorn server
+# Final CMD — Gunicorn only (migrations handled by docker-compose)
 CMD ["gunicorn", "work_pulse_be.wsgi:application", "--bind", "0.0.0.0:8000"]
