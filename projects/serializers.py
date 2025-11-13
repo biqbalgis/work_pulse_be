@@ -33,3 +33,9 @@ class UserProjectRoleSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProjectRole
         fields = ['id', 'user', 'project', 'job_title', 'hourly_rate']
+
+
+class AddProjectRoleSerializer(serializers.Serializer):
+    project = serializers.UUIDField()
+    job_title_name = serializers.CharField(max_length=200)
+    hourly_rate = serializers.DecimalField(max_digits=8, decimal_places=2)
