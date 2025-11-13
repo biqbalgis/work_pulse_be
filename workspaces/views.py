@@ -34,6 +34,21 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
 
 class WorkspaceMemberViewSet(viewsets.ModelViewSet):
-    queryset = WorkspaceMember.objects.all()
     serializer_class = WorkspaceMemberSerializer
     permission_classes = [permissions.IsAuthenticated]
+    def get_queryset(self):
+        workspace_id = self.request.query_params.get("workspace", None)
+
+        # Superuser sees all
+        if self.request.user.is_superuser:
+            qs = WorkspaceMember.objects.all()
+
+        else:
+            # Normal users see only their workspace
+            qs = WorkspaceMember.objects.filter(workspace__members__user=self.request.user)
+
+        # Filter for specific workspace if provided
+        if workspace_id:
+            qs = qs.filter(workspace_id=workspace_id)
+
+        return qs.select_related("user", "workspace")

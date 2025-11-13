@@ -97,6 +97,7 @@ class UserViewSet(viewsets.ModelViewSet):
 class EmailLoginView(TokenObtainPairView):
     serializer_class = EmailTokenObtainPairSerializer
 
+
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]  # superuser/admins can create
