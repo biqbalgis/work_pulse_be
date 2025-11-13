@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  django:
+    build: .
+    container_name: work_pulse_be_app
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - wait-for-db
+    command: >
+      sh -c "python manage.py migrate &&
+             gunicorn work_pulse_be.wsgi:application --bind 0.0.0.0:8000"
+
+  # Fake service whose only job is to wait for external DB to accept connections
+  wait-for-db:
+    image: alpine
+    command: >
+      /bin/sh -c "
+        echo Waiting for database...;
+        while ! nc -z $DB_HOST $DB_PORT; do
+          sleep 2;
+        done;
+        echo Database is up;
+      "
+    env_file:
+      - .env

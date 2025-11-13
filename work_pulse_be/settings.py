@@ -1,11 +1,14 @@
 import os
 from datetime import timedelta
+
+from decouple import config, Csv
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-SECRET_KEY = 'django-insecure-c25blbdkg7f^+=u-8xejk54zwhetjxehk0i1=krxio1q$3hd*&'
+SECRET_KEY = config('SECRET_KEY')
 
-DEBUG = True
-ALLOWED_HOSTS = ['*']
+DEBUG = config('DEBUG', default=False, cast=bool)
+ALLOWED_HOSTS =  config("ALLOWED_HOSTS", default="*").split(",")
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -62,11 +65,13 @@ WSGI_APPLICATION = 'work_pulse_be.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'work_pulse_db',
-        'USER': 'postgres',
-        'PASSWORD': '123',
-        'HOST': 'localhost',
-        'PORT': '5432',
+        'NAME': config('DB_NAME'),
+        'USER': config('DB_USER'),
+        'PASSWORD': config('DB_PASSWORD'),
+        'HOST': config('DB_HOST'),
+        'PORT': config('DB_PORT'),
+        'CONN_MAX_AGE': config('CONN_MAX_AGE', default=60, cast=int),
+
     }
 }
 
@@ -121,6 +126,9 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",  # Vite default port
     "http://127.0.0.1:5173",
+    "http://104.248.211.192:5173",
+    "http://104.248.211.192:3000",
+    "http://104.248.211.192:8000",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
