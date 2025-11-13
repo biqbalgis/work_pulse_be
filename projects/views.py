@@ -117,6 +117,41 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         # Final response
         return Response({"project_role": ProjectRoleSerializer(project_role).data,"job_title_created": created,"project_role_created": pr_created},status=status.HTTP_201_CREATED)
 
+    @action(detail=False, methods=["post"], url_path="assign-user-role")
+    def assign_user_role(self, request):
+        project_id = request.data.get("project")
+        user_id = request.data.get("user")
+        job_title_id = request.data.get("job_title")
+        hourly_rate = request.data.get("hourly_rate")
+
+        if not project_id or not user_id or not job_title_id:
+            raise ValidationError("project, user and job_title are required.")
+
+        # Ensure job_title exists for the project
+        project_role = ProjectRole.objects.filter(
+            project_id=project_id,
+            job_title_id=job_title_id
+        ).first()
+
+        if not project_role:
+            raise ValidationError("This job title is not configured for this project.")
+
+        # Create or update UserProjectRole
+        upr, created = UserProjectRole.objects.update_or_create(
+            project_id=project_id,
+            user_id=user_id,
+            job_title_id=job_title_id,
+            defaults={"hourly_rate": hourly_rate or project_role.hourly_rate}
+        )
+
+        return Response(
+            {
+                "status": "success",
+                "created": created,
+                "user_project_role": UserProjectRoleSerializer(upr).data
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        )
 
 class UserProjectRoleViewSet(viewsets.ModelViewSet):
     serializer_class = UserProjectRoleSerializer

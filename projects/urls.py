@@ -7,4 +7,5 @@ router.register('job-titles', JobTitleViewSet, basename='job-titles')
 router.register('project-roles', ProjectRoleViewSet, basename='project-roles')
 router.register('user-project-roles', UserProjectRoleViewSet, basename='user-project-roles')
 
+
 urlpatterns = router.urls
