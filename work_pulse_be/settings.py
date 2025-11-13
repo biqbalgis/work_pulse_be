@@ -135,3 +135,14 @@ CORS_ALLOW_CREDENTIALS = True
 
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+
+STATIC_URL = '/static/'
+
+# Required for Docker builds
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+# (Optional) if you're serving static files manually
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'static')
+]
