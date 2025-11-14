@@ -153,6 +153,33 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
         )
 
+    @action(detail=False, methods=['get'], url_path='user-job-titles')
+    def get_user_job_titles(self, request):
+        project_id = request.GET.get("project")
+        user_id = request.GET.get("user")
+
+        if not project_id or not user_id:
+            return Response(
+                {"error": "project_id and user_id are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        roles = UserProjectRole.objects.filter(
+            project_id=project_id,
+            user_id=user_id
+        ).select_related("job_title")
+
+        data = [
+            {
+                "job_title_id": str(role.job_title.id),
+                "job_title": role.job_title.name,
+                "hourly_rate": role.hourly_rate,
+            }
+            for role in roles
+        ]
+
+        return Response(data, status=status.HTTP_200_OK)
+
 class UserProjectRoleViewSet(viewsets.ModelViewSet):
     serializer_class = UserProjectRoleSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -175,3 +202,5 @@ class UserProjectRoleViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         log_activity(self.request.user, "DELETE", "UserProjectRole", instance.id, request=self.request)
         instance.delete()
+
+
