@@ -86,7 +86,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'email', 'first_name', 'last_name', 'password',
-            'workspace_id', 'workspace_name', 'role'
+            'workspace_id', 'role'
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
@@ -99,8 +99,16 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         request_user = self.context['request'].user if self.context.get('request') else None
 
-        # 🧩 CASE 1: Superuser creating a global user (no workspace link)
+        # 🧩 CASE 1: Superuser creating a user
         if request_user and request_user.is_superuser:
+            # If workspace_id is provided, create user with workspace
+            # if workspace_id:
+            #     workspace = Workspace.objects.filter(id=workspace_id).first()
+            #     if workspace:
+            #         user = User.objects.create_user(**validated_data, primary_workspace=workspace)
+            #         WorkspaceMember.objects.create(workspace=workspace, user=user, role=role)
+            #         return user
+            # # Otherwise, create global user (no workspace link)
             user = User.objects.create_user(**validated_data)
             return user
 
