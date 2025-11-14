@@ -100,12 +100,6 @@ class RegisterSerializer(serializers.ModelSerializer):
         validated_data['username'] = email
 
         request_user = self.context['request'].user if self.context.get('request') else None
-
-        # 🧩 CASE 1: Superuser creating a global user (no workspace link)
-        # if request_user and request_user.is_superuser:
-        #     user = User.objects.create_user(**validated_data)
-
-        # 🧩 CASE 2: Workspace Admin / Manager creating user within a workspace
         workspace = None
         if workspace_id:
             workspace = Workspace.objects.filter(id=workspace_id).first()
