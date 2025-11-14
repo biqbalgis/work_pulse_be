@@ -40,15 +40,15 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         if memberships.exists():
             # Pick the first workspace for now (support multiple later if needed)
-            membership = memberships.first()
-            workspace = membership.workspace
-            role = membership.role
+            workspace_data = []
+            for m in memberships:
+                workspace_data.append({
+                    "id": str(m.workspace.id),
+                    "name": m.workspace.name,
+                    "role": m.role
+                })
 
-            workspace_data = {
-                "id": str(workspace.id),
-                "name": workspace.name,
-                "role": role,
-            }
+
         else:
             # Global or superuser (no workspace)
             workspace_data = {
@@ -68,6 +68,7 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
                 'email': user.email,
                 'first_name': user.first_name,
                 'last_name': user.last_name,
+                'is_superuser': user.is_superuser,
                 'workspace': workspace_data,
             },
         }

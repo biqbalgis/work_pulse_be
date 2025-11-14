@@ -32,4 +32,11 @@ RUN python manage.py collectstatic --noinput
 EXPOSE 8000
 
 # Final CMD — Gunicorn only (migrations handled by docker-compose)
-CMD ["gunicorn", "work_pulse_be.wsgi:application", "--bind", "0.0.0.0:8000"]
+CMD ["gunicorn", "work_pulse_be.wsgi:application",
+     "--bind", "0.0.0.0:8000",
+     "--workers", "2",
+     "--timeout", "120",
+     "--log-level", "debug",
+     "--error-logfile", "-",
+     "--access-logfile", "-"]
+
