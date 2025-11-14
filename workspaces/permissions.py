@@ -44,7 +44,12 @@ class IsWorkspaceManager(permissions.BasePermission):
         if user.is_superuser:
             return True
 
-        workspace = getattr(view, 'workspace', None) or getattr(user, 'primary_workspace', None)
+        membership = WorkspaceMember.objects.filter(user=user).first()
+
+        workspace = (
+                getattr(view, "workspace", None)
+                or (membership.workspace if membership else None))
+
         if not workspace:
             return False
 
