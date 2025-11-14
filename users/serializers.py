@@ -5,6 +5,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from workspaces.models import Workspace, WorkspaceMember
 from .models import User
 
+
 class UserSerializer(serializers.ModelSerializer):
     workspace = serializers.PrimaryKeyRelatedField(
         queryset=Workspace.objects.all(),
@@ -16,6 +17,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id", "email", "first_name", "last_name", "is_active"]
         read_only_fields = ["id", "is_active"]
+
 
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
     username_field = 'email'
@@ -86,7 +88,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'email', 'first_name', 'last_name', 'password',
-            'workspace_id', 'workspace_name', 'role'
+            'workspace_id', 'role'
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
@@ -100,9 +102,8 @@ class RegisterSerializer(serializers.ModelSerializer):
         request_user = self.context['request'].user if self.context.get('request') else None
 
         # 🧩 CASE 1: Superuser creating a global user (no workspace link)
-        if request_user and request_user.is_superuser:
-            user = User.objects.create_user(**validated_data)
-            return user
+        # if request_user and request_user.is_superuser:
+        #     user = User.objects.create_user(**validated_data)
 
         # 🧩 CASE 2: Workspace Admin / Manager creating user within a workspace
         workspace = None
@@ -110,8 +111,12 @@ class RegisterSerializer(serializers.ModelSerializer):
             workspace = Workspace.objects.filter(id=workspace_id).first()
 
         if not workspace:
-            raise serializers.ValidationError("Workspace ID or name is required for non-superuser registration.")
+            if request_user and request_user.is_superuser:
+                user = User.objects.create_user(**validated_data)
+                return user
+            else:
+                raise serializers.ValidationError("Workspace ID or name is required for non-superuser registration.")
 
-        user = User.objects.create_user(**validated_data, primary_workspace=workspace)
+        user = User.objects.create_user(**validated_data)
         WorkspaceMember.objects.create(workspace=workspace, user=user, role=role)
         return user
