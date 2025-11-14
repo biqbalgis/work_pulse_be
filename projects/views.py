@@ -155,8 +155,8 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='user-job-titles')
     def get_user_job_titles(self, request):
-        project_id = request.data.get("project_id")
-        user_id = request.data.get("user_id")
+        project_id = request.data.get("project")
+        user_id = request.data.get("user")
 
         if not project_id or not user_id:
             return Response(
