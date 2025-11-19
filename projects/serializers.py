@@ -12,6 +12,8 @@ class ProjectSerializer(serializers.ModelSerializer):
             'color',
             'billable',
             'workspace',
+            'client_hours_rate',
+            'default_rt_hours',
             'created_by',
             'created_at'
         ]

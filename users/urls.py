@@ -11,7 +11,6 @@ urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
     path('login/', EmailLoginView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-
     # 🔹 Include all viewset routes
     path('', include(router.urls)),
 ]

@@ -38,4 +38,7 @@ urlpatterns = [
 
     # 🏷️ Tags
     path('api/', include('tags.urls')),
+
+    #  Reports
+    path("api/reports/", include("reports.urls")),
 ]

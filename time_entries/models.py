@@ -20,10 +20,10 @@ class TimeEntry(SoftDeleteModel):
     hourly_rate = models.DecimalField(max_digits=8, decimal_places=2, null=True)  # NEW
     cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)  # NEW
     billable = models.BooleanField(default=False)
+    meals = models.BooleanField(default=False)
+    hotels = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
-    created_by = models.ForeignKey(
-        User, on_delete=models.SET_NULL, null=True, related_name='created_timeentry'
-    )
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_timeentry')
 
     def __str__(self):
         return f"{self.user} - {self.project}"
