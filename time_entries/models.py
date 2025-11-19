@@ -22,6 +22,7 @@ class TimeEntry(SoftDeleteModel):
     billable = models.BooleanField(default=False)
     meals = models.BooleanField(default=False)
     hotels = models.BooleanField(default=False)
+    is_locked = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_timeentry')
 

@@ -17,6 +17,7 @@ class TimeEntryApproval(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_approvals')
 
+
 class TimeEntryApprovalItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     approval = models.ForeignKey(TimeEntryApproval, on_delete=models.CASCADE, related_name='items')
