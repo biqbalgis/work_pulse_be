@@ -1,23 +1,27 @@
 from rest_framework import serializers
+
+from workspaces.models import Workspace
 from .models import Project, JobTitle, ProjectRole, UserProjectRole
 
 
 class ProjectSerializer(serializers.ModelSerializer):
+    workspace = serializers.PrimaryKeyRelatedField(
+        queryset=Workspace.objects.all(),
+        required=False  # 👈 IMPORTANT
+    )
     class Meta:
         model = Project
-        fields = [
-            'id',
-            'name',
-            'client',
-            'color',
-            'billable',
-            'workspace',
-            'client_hours_rate',
-            'default_rt_hours',
-            'created_by',
-            'created_at'
-        ]
-        read_only_fields = ['workspace', 'created_by', 'created_at']
+        fields = "__all__"
+        read_only_fields = ["created_by"]  # DO NOT put workspace here
+
+    def validate(self, attrs):
+        user = self.context['request'].user
+
+        # Non-superuser should NOT set workspace
+        if not user.is_superuser and "workspace" in attrs:
+            attrs.pop("workspace")
+
+        return attrs
 
 class JobTitleSerializer(serializers.ModelSerializer):
     class Meta:

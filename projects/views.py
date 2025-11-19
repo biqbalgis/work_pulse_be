@@ -27,8 +27,12 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        if user.is_superuser and 'workspace' in self.request.data:
-            workspace = serializer.validated_data.get('workspace')
+        if user.is_superuser:
+            workspace = serializer.validated_data.get("workspace")
+            if workspace is None:
+                raise serializers.ValidationError({"workspace": "Workspace is required for superuser."})
+
+            # NON-SUPERUSER: workspace MUST NOT come from payload. Use membership.
         else:
             member = WorkspaceMember.objects.filter(user=user).first()
             if not member:
