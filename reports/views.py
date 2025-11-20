@@ -2,6 +2,7 @@ from datetime import datetime
 
 from django.shortcuts import render
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Sum
@@ -9,11 +10,14 @@ from django.db.models.functions import TruncDate
 
 from projects.models import Project
 from time_entries.models import TimeEntry
+from workspaces.permissions import IsWorkspaceManager, IsSuperUser
 
 
 # Create your views here.
 
 class WeeklyPayrollReport(APIView):
+    permission_classes = [IsAuthenticated,IsWorkspaceManager | IsSuperUser]
+
     def post(self, request):
         from_date = request.data.get("from")
         to_date = request.data.get("to")
