@@ -1,4 +1,6 @@
 from rest_framework import permissions
+from rest_framework.permissions import SAFE_METHODS, BasePermission
+
 from workspaces.models import WorkspaceMember
 
 def get_user_role_in_workspace(user, workspace=None):
@@ -80,3 +82,32 @@ class IsWorkspaceUser(permissions.BasePermission):
         return WorkspaceMember.objects.filter(
             user=user, workspace=workspace, role__in=['user', 'manager', 'admin']
         ).exists()
+
+class IsWorkspaceAdminOrSuperUser(BasePermission):
+    """
+    Read allowed for all workspace members.
+    Write allowed only for workspace admin or superuser.
+    """
+
+    def has_permission(self, request, view):
+        user = request.user
+
+        # Must be authenticated
+        if not user or not user.is_authenticated:
+            return False
+
+        # Superuser always allowed
+        if user.is_superuser:
+            return True
+
+        # Check workspace membership
+        is_member = WorkspaceMember.objects.filter(user=user).exists()
+        if not is_member:
+            return False
+
+        # Allow READ for any workspace member
+        if request.method in SAFE_METHODS:
+            return True
+
+        # Allow WRITE only for workspace admin
+        return WorkspaceMember.objects.filter(user=user, role="admin").exists()

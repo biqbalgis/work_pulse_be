@@ -8,7 +8,8 @@ from .serializers import ProjectSerializer, ProjectRoleSerializer, UserProjectRo
     AddProjectRoleSerializer
 from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
-from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser
+from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser, IsWorkspaceAdminOrSuperUser
+
 
 def get_user_workspace(request):
     member = WorkspaceMember.objects.filter(user=request.user).first()
@@ -16,13 +17,16 @@ def get_user_workspace(request):
 
 class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
+    # permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
+    permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdminOrSuperUser]
 
     def get_queryset(self):
         user = self.request.user
+
         if user.is_superuser:
             return Project.objects.filter(is_deleted=False)
-        workspace_ids = WorkspaceMember.objects.filter(user=user).values_list('workspace_id', flat=True)
+
+        workspace_ids = WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
         return Project.objects.filter(workspace_id__in=workspace_ids, is_deleted=False)
 
     def perform_create(self, serializer):
