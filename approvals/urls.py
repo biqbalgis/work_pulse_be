@@ -1,7 +1,7 @@
 from rest_framework.routers import DefaultRouter
-from .views import TimeEntryApprovalViewSet, TimeEntryApprovalItemViewSet
+from .views import TimeEntryApprovalViewSet
 
 router = DefaultRouter()
-router.register("weeks", TimeEntryApprovalViewSet, basename="approvals")
-router.register("items", TimeEntryApprovalItemViewSet, basename="approval-items")
+router.register("approvals", TimeEntryApprovalViewSet, basename="approvals")
+
 urlpatterns = router.urls
