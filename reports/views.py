@@ -8,9 +8,11 @@ from rest_framework.views import APIView
 from django.db.models import Sum
 from django.db.models.functions import TruncDate
 
+from approvals.models import TimeEntryApprovalItem
 from projects.models import Project
 from time_entries.models import TimeEntry
-from workspaces.permissions import IsWorkspaceManager, IsSuperUser
+from workspaces.models import WorkspaceMember
+from workspaces.permissions import IsWorkspaceManager, IsSuperUser, IsWorkspaceUser
 
 
 # Create your views here.
@@ -59,3 +61,159 @@ class WeeklyPayrollReport(APIView):
             })
 
         return Response(results, status=status.HTTP_200_OK)
+
+
+class DailyRTOTReport(APIView):
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def post(self, request):
+        from_date = request.data.get("from")
+        to_date = request.data.get("to")
+
+        if not from_date or not to_date:
+            return Response({"error": "from and to dates are required"}, status=400)
+
+        from_date = datetime.strptime(from_date, "%Y-%m-%d").date()
+        to_date = datetime.strptime(to_date, "%Y-%m-%d").date()
+
+        user = request.user
+
+        # 1) Filter only ACTIVE projects
+        active_ids = Project.objects.filter(is_active=True).values_list("id", flat=True)
+
+        # 2) Filter only APPROVED time entries (for payroll calculation)
+        # approved_ids = TimeEntryApprovalItem.objects.filter(
+        #     approved=True
+        # ).values_list("time_entry_id", flat=True)
+
+        # 3) Base query
+        base_query = TimeEntry.objects.filter(
+            # id__in=approved_ids,
+            start_time__date__range=[from_date, to_date],
+            project_id__in=active_ids
+        )
+
+        # 4) Role check (admin/superuser can see all, normal user only see own)
+        is_admin_or_super = user.is_superuser or WorkspaceMember.objects.filter(
+            user=user, role="admin"
+        ).exists()
+
+        if not is_admin_or_super:
+            base_query = base_query.filter(user=user)
+
+        # 5) Group and summarize
+        entries = (
+            base_query
+            .annotate(date=TruncDate("start_time"))
+            .values("date", "user_id", "user__first_name", "user__last_name")
+            .annotate(total_minutes=Sum("duration"))
+            .order_by("date", "user_id")
+        )
+
+        # 6) Get descriptions grouped by user + date
+        desc_lookup = {}
+        for t in base_query:
+            key = (t.start_time.date(), t.user_id)
+            desc_lookup.setdefault(key, [])
+            if t.description:
+                desc_lookup[key].append(t.description)
+
+        result = {}
+
+        for e in entries:
+            date_str = str(e["date"])
+            hrs = e["total_minutes"] / 60.0
+
+            # RT/OT rules for daily payroll
+            rt = min(hrs, 8.0)
+            ot = max(hrs - 8.0, 0.0)
+
+            key = (e["date"], e["user_id"])
+            descriptions = desc_lookup.get(key, [])
+
+            emp_data = {
+                "employee_id": e["user_id"],
+                "employee_name": f"{e['user__first_name']} {e['user__last_name']}",
+                "total_hours": round(hrs, 2),
+                "rt_hours": round(rt, 2),
+                "ot_hours": round(ot, 2),
+                "descriptions": descriptions
+            }
+
+            result.setdefault(date_str, []).append(emp_data)
+
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class DailyDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def get(self, request, employee_id, date):
+        from datetime import datetime
+        from time_entries.models import TimeEntry
+        from approvals.models import TimeEntryApprovalItem
+
+        # Parse date
+        date = datetime.strptime(date, "%Y-%m-%d").date()
+
+        # Fetch ALL entries for that date
+        entries = list(TimeEntry.objects.filter(
+            user_id=employee_id,
+            start_time__date=date
+        ).select_related("project", "job_title").order_by("start_time"))
+
+        # Calculate approval status map
+        approval_map = {
+            a.time_entry_id: a.approved
+            for a in TimeEntryApprovalItem.objects.filter(
+                time_entry_id__in=[e.id for e in entries]
+            )
+        }
+
+        # ----------- RT/OT CALCULATION -------------
+        total_minutes = sum(e.duration for e in entries)
+        total_hours = total_minutes / 60.0
+
+        remaining_rt = 8.0  # daily limit
+
+        def allocate_rt_ot(entry_minutes):
+            nonlocal remaining_rt
+            hours = entry_minutes / 60.0
+
+            if remaining_rt <= 0:
+                return 0.0, hours  # all OT
+
+            rt_hours = min(hours, remaining_rt)
+            remaining_rt -= rt_hours
+            ot_hours = hours - rt_hours
+            return rt_hours, ot_hours
+
+        # ---------------------------------------------
+
+        result = {
+            "date": str(date),
+            "employee_id": employee_id,
+            "entries": []
+        }
+
+        for e in entries:
+            rt, ot = allocate_rt_ot(e.duration)
+
+            result["entries"].append({
+                "id": str(e.id),
+                "start_time": e.start_time.strftime("%H:%M"),
+                "end_time": e.end_time.strftime("%H:%M") if e.end_time else None,
+                "duration_hours": round(e.duration / 60.0, 2),
+                "rt_hours": round(rt, 2),
+                "ot_hours": round(ot, 2),
+                "project": e.project.name if e.project else None,
+                "billable": e.billable,
+                "meals": getattr(e, "meals", False),
+                "hotels": getattr(e, "hotels", False),
+                "job_title": e.job_title.name if e.job_title else None,
+                "approved": approval_map.get(e.id, None),
+                "description": e.description
+            })
+
+        return Response(result, status=200)
+
