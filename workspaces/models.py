@@ -28,6 +28,7 @@ class WorkspaceMember(models.Model):
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='user')
     joined_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
+    manager = models.ForeignKey(User,on_delete=models.SET_NULL,null=True,blank=True,related_name="team_members")
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_workspacesmembers')
     created_at = models.DateTimeField(auto_now_add=True)
 

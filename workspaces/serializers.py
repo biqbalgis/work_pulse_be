@@ -1,4 +1,6 @@
 from rest_framework import serializers
+
+from users.models import User
 from .models import Workspace, WorkspaceMember
 
 
@@ -30,6 +32,13 @@ class WorkspaceMemberSerializer(serializers.ModelSerializer):
     user_email = serializers.EmailField(source="user.email", read_only=True)
     user_name = serializers.CharField(source="user.get_full_name", read_only=True)
 
+    # Manager field added here (pointing to User ID)
+    manager = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        required=False,
+        allow_null=True
+    )
+
     class Meta:
         model = WorkspaceMember
         fields = [
@@ -37,6 +46,28 @@ class WorkspaceMemberSerializer(serializers.ModelSerializer):
             'workspace',
             'user',
             'role',
+            'manager',
             'user_email',
             'user_name',
         ]
+
+    def validate(self, attrs):
+        workspace = attrs.get("workspace")
+        manager = attrs.get("manager")
+
+        # If a manager is selected
+        if manager:
+            # Check if manager is part of the same workspace
+            membership = WorkspaceMember.objects.filter(user=manager, workspace=workspace).first()
+            if not membership:
+                raise serializers.ValidationError(
+                    {"manager": "Manager must belong to the same workspace."}
+                )
+
+            # Check role of manager
+            if membership.role not in ["manager", "admin"]:
+                raise serializers.ValidationError(
+                    {"manager": "Selected user is not a manager or admin."}
+                )
+
+        return attrs
