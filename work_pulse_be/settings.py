@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     'approvals',
     'time_off',
     'tags',
+    'organization_asset',
     'corsheaders',
 ]
 

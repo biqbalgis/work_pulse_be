@@ -75,7 +75,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         duration_hours = Decimal(duration_seconds / 3600).quantize(Decimal("0.01"))
         cost = duration_hours * Decimal(hourly_rate)
 
-        # Save entry
+        # Save time entry
         time_entry = serializer.save(
             user=user,
             workspace=workspace,
@@ -94,13 +94,26 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
             request=self.request
         )
 
-        # -------------  NEW AUTO-APPROVAL CODE --------------
+        # -------------  ✓ ADD THIS BLOCK (ASSET SAVE) --------------
+        from organization_asset.models import OrganizationAsset, AssetUsage
+        assets_data = self.request.data.get("assets", [])
 
-        # Determine weekly approval window (Sun–Sat)
+        for item in assets_data:
+            asset = OrganizationAsset.objects.get(id=item["asset_id"])
+
+            usage = AssetUsage.objects.create(
+                time_entry=time_entry,
+                asset=asset,
+                quantity_used=item.get("quantity_used")  # optional
+            )
+            usage.cost = usage.calculate_cost(duration_hours)  # cost based on duration or qty
+            usage.save()
+        # -------------  ✓ END OF ASSET BLOCK --------------
+
+        # -------------  NEW AUTO-APPROVAL CODE --------------
         entry_date = time_entry.start_time.date()
         start_week, end_week = get_week_bounds(entry_date)
 
-        # Attach entry to existing pending approval OR create a new one
         approval, created = TimeEntryApproval.objects.get_or_create(
             workspace=workspace,
             user=user,
@@ -112,11 +125,10 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
             }
         )
 
-        # Create approval item
         TimeEntryApprovalItem.objects.create(
             approval=approval,
             time_entry=time_entry,
-            approved=True,  # default pending state
+            approved=True,
             created_by=user
         )
 
@@ -124,6 +136,35 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         entry = self.get_object()
+
+        # ❌ Prevent editing if approved (locked)
         if entry.is_locked:
             raise ValidationError("This time entry is approved and cannot be edited.")
-        serializer.save()
+
+        # Save basic time entry fields
+        updated_entry = serializer.save()
+
+        # ---- Handle asset update ----
+        assets_data = self.request.data.get("assets", None)
+
+        if assets_data is not None:
+            from organization_asset.models import OrganizationAsset, AssetUsage
+
+            # Delete existing usage to replace with new one
+            AssetUsage.objects.filter(time_entry=entry).delete()
+
+            # Recreate asset usage from request
+            duration_hours = entry.duration / 60  # convert minutes to hours
+
+            for item in assets_data:
+                asset = OrganizationAsset.objects.get(id=item["asset_id"])
+
+                usage = AssetUsage.objects.create(
+                    time_entry=entry,
+                    asset=asset,
+                    quantity_used=item.get("quantity_used")
+                )
+                usage.cost = usage.calculate_cost(duration_hours)
+                usage.save()
+
+        return updated_entry

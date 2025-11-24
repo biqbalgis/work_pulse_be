@@ -10,3 +10,4 @@
 /workspaces/migrations/
 /.venv/
 /reports/migrations/
+/organization_asset/migrations/

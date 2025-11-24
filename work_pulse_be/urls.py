@@ -18,6 +18,10 @@ urlpatterns = [
     # 🏢 Workspaces
     path('api/', include('workspaces.urls')),
 
+
+    # 🏢 Workspaces Asserts
+    path("api/assets/", include("organization_asset.urls")),
+
     # 👨‍💼 Clients
     path('api/', include('clients.urls')),
 
