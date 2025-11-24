@@ -4,13 +4,12 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from django.utils.timezone import now
 
 from workspaces.permissions import IsWorkspaceUser
 from .models import TimeEntryApproval, TimeEntryApprovalItem
 from .serializers import TimeEntryApprovalSerializer, TimeEntryApprovalItemSerializer
 from time_entries.models import TimeEntry
-from .utils import can_approve
+from .utils import can_approve, calculate_rt_ot_and_cost
 
 
 class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
@@ -19,6 +18,40 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
 
     # ========== EMPLOYEE SUBMITS WEEK ==========
+    def list(self, request, *args, **kwargs):
+        approvals = self.get_queryset()
+
+        data = []
+        for approval in approvals:
+            items = approval.items.select_related("time_entry__project")
+            metrics = calculate_rt_ot_and_cost(items)
+
+            data.append({
+                "id": approval.id,
+                "employee": {
+                    "id": approval.user.id,
+                    "name": approval.user.get_full_name()
+                },
+                "period": {
+                    "start_date": approval.start_date,
+                    "end_date": approval.end_date,
+                    "type": "day" if approval.start_date == approval.end_date else "week"
+                },
+                "entries_count": items.count(),
+                "hours": {
+                    "total": metrics["total_hours"],
+                    "regular": metrics["rt_hours"],
+                    "overtime": metrics["ot_hours"]
+                },
+                "cost": {
+                    "total": metrics["total_cost"]
+                },
+                "status": approval.status,
+                "can_approve": can_approve(request.user, approval.user, approval.workspace)
+            })
+
+        return Response(data)
+
     @action(detail=False, methods=["post"], url_path="submit")
     def submit_for_approval(self, request):
         user = request.user
@@ -160,3 +193,88 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         e.save()
 
         return Response({"message": "Entry rejected."})
+
+    # ========== DETAIL VIEW WITH DAILY BREAKDOWN ==========
+    def retrieve(self, request, pk=None):
+        approval = self.get_object()
+        items = approval.items.select_related("time_entry__project")
+
+        from collections import defaultdict
+        from decimal import Decimal
+        from approvals.utils import calculate_rt_ot_and_cost
+
+        # 🌐 Overall Summary for the whole approval
+        summary = calculate_rt_ot_and_cost(items)
+
+        # 📆 Daily + Project breakdown storage
+        breakdown = defaultdict(lambda: defaultdict(lambda: {
+            "total": Decimal("0.00"),
+            "rt": Decimal("0.00"),
+            "ot": Decimal("0.00"),
+            "cost": Decimal("0.00")
+        }))
+
+        # 🧮 Process every entry inside approval
+        for item in items:
+            entry = item.time_entry
+            date = entry.start_time.date()
+            project = entry.project
+
+            hours = Decimal(entry.duration) / Decimal(60)
+            rt_limit = Decimal(project.default_rt_hours)
+            ot_multiplier = Decimal(project.ot_multiplier)
+
+            # ➗ RT/OT logic
+            rt = min(hours, rt_limit)
+            ot = max(hours - rt_limit, Decimal("0.00"))
+
+            # 💵 Cost only if billable (Option B)
+            if entry.billable:
+                rt_cost = Decimal(entry.hourly_rate) * rt
+                ot_cost = Decimal(entry.hourly_rate) * ot_multiplier * ot
+            else:
+                rt_cost = Decimal("0.00")
+                ot_cost = Decimal("0.00")
+
+            # 🔄 Add values to breakdown dictionary
+            breakdown[date][project.name]["total"] += hours
+            breakdown[date][project.name]["rt"] += rt
+            breakdown[date][project.name]["ot"] += ot
+            breakdown[date][project.name]["cost"] += (rt_cost + ot_cost)
+
+        # 📌 Convert breakdown to JSON-friendly format
+        formatted_days = []
+        for date, projects in breakdown.items():
+            project_list = []
+            for name, data in projects.items():
+                project_list.append({
+                    "project": name,
+                    "hours_total": float(data["total"]),
+                    "rt_hours": float(data["rt"]),
+                    "ot_hours": float(data["ot"]),
+                    "cost": float(data["cost"])
+                })
+            formatted_days.append({"date": str(date), "projects": project_list})
+
+        # 📤 Final Response JSON
+        return Response({
+            "id": approval.id,
+            "employee": {
+                "id": approval.user.id,
+                "name": approval.user.get_full_name(),
+            },
+            "period": {
+                "start_date": approval.start_date,
+                "end_date": approval.end_date,
+                "type": "day" if approval.start_date == approval.end_date else "week",
+            },
+            "summary": {
+                "total_hours": summary["total_hours"],
+                "regular_hours": summary["rt_hours"],
+                "overtime_hours": summary["ot_hours"],
+                "total_cost": summary["total_cost"]
+            },
+            "daily_breakdown": formatted_days,
+            "status": approval.status,
+            "can_approve": can_approve(request.user, approval.user, approval.workspace)
+        })

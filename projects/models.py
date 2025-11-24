@@ -13,6 +13,7 @@ class Project(SoftDeleteModel):
     color = models.CharField(max_length=7, null=True, blank=True)
     default_rt_hours = models.DecimalField(max_digits=5, decimal_places=2, default=8, null=True, blank=True)
     client_hours_rate = models.DecimalField(max_digits=8, decimal_places=4,null=True, blank=True)
+    ot_multiplier = models.DecimalField(max_digits=5, decimal_places=2, default=2)  # default double rate
     is_active = models.BooleanField(default=True)
     billable = models.BooleanField(default=False)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_projects')

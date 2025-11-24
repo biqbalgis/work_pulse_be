@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from django.shortcuts import render
 from rest_framework import status
@@ -9,6 +9,7 @@ from django.db.models import Sum
 from django.db.models.functions import TruncDate
 
 from approvals.models import TimeEntryApprovalItem
+from approvals.utils import calculate_rt_ot_and_cost
 from projects.models import Project
 from time_entries.models import TimeEntry
 from workspaces.models import WorkspaceMember
@@ -217,3 +218,66 @@ class DailyDetailView(APIView):
 
         return Response(result, status=200)
 
+
+
+class EmployeePayrollDashboard(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        period = request.GET.get("period", "week")
+        start = request.GET.get("start")
+        end = request.GET.get("end")
+
+        # If no custom dates, auto-detect current week/month
+        today = datetime.utcnow().date()
+
+        if not start or not end:
+            if period == "month":
+                start = today.replace(day=1)
+                end = (start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+            else:  # weekly (Sunday -> Saturday)
+                days_until_sunday = (today.weekday() + 1) % 7
+                start = today - timedelta(days=days_until_sunday)
+                end = start + timedelta(days=6)
+        else:
+            start = datetime.strptime(start, "%Y-%m-%d").date()
+            end = datetime.strptime(end, "%Y-%m-%d").date()
+
+        # Fetch only APPROVED items
+        items = TimeEntryApprovalItem.objects.filter(
+            approval__status="approved",
+            time_entry__start_time__date__range=[start, end]
+        ).select_related("time_entry__user", "time_entry__project")
+
+        # Group by employee
+        employees = {}
+        for item in items:
+            u = item.time_entry.user
+            if u.id not in employees:
+                employees[u.id] = {
+                    "employee_id": u.id,
+                    "employee_name": u.get_full_name(),
+                    "items": []
+                }
+            employees[u.id]["items"].append(item)
+
+        # Calculate metrics using existing helper
+        result = []
+        for emp in employees.values():
+            metrics = calculate_rt_ot_and_cost(emp["items"])
+            result.append({
+                "employee_id": emp["employee_id"],
+                "employee_name": emp["employee_name"],
+                "hours": {
+                    "total": metrics["total_hours"],
+                    "regular": metrics["rt_hours"],
+                    "overtime": metrics["ot_hours"]
+                },
+                "cost": {
+                    "total": metrics["total_cost"],
+                    "regular_cost": metrics.get("rt_cost", 0),
+                    "overtime_cost": metrics.get("ot_cost", 0)
+                }
+            })
+
+        return Response(result)
