@@ -48,15 +48,15 @@ COPY --from=builder /app/requirements.txt .
 # Install dependencies
 RUN pip install --no-cache /wheels/*
 
-# Copy entrypoint script
+# Copy project files first
+COPY . /app/
+
+# Copy and set up entrypoint script (do this AFTER copying project files to ensure it's fresh)
 COPY entrypoint.sh /app/entrypoint.sh
 RUN sed -i 's/\r$//g' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
-# Copy project files
-COPY . /app/
-
 # Create directory for static and media files and give ownership to appuser
-RUN mkdir -p /app/staticfiles /app/media && chown -R appuser:appuser /app/staticfiles /app/media
+RUN mkdir -p /app/staticfiles /app/media && chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
