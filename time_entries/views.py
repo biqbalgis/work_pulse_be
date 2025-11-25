@@ -96,7 +96,8 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
         # -------------  ✓ ADD THIS BLOCK (ASSET SAVE) --------------
         from organization_asset.models import OrganizationAsset, AssetUsage
-        assets_data = self.request.data.get("assets", [])
+        assets_data = serializer.validated_data.get("asset_inputs", [])
+
 
         for item in assets_data:
             asset = OrganizationAsset.objects.get(id=item["asset_id"])

@@ -22,14 +22,20 @@ class AssetUsageInputSerializer(serializers.Serializer):
     quantity_used = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
 
 class TimeEntrySerializer(serializers.ModelSerializer):
-    assets = AssetUsageInputSerializer(source="asset_usages", many=True, read_only=True)
+    # Output serializer for GET
+    assets = AssetUsageOutputSerializer(source="asset_usages", many=True, read_only=True)
+
+    # Input serializer for POST/PATCH
+    asset_inputs = AssetUsageInputSerializer(many=True, write_only=True, required=False)
 
     class Meta:
         model = TimeEntry
         fields = [
             "id","user","workspace","project","task","job_title","description",
             "start_time","end_time","duration","hourly_rate","cost","billable",
-            "meals","hotels","assets","created_at","created_by"
+            "meals","hotels","assets","asset_inputs","created_at","created_by"
         ]
-        read_only_fields = ["id","user","workspace","duration","hourly_rate","cost",
-                            "created_at","created_by","assets"]
+        read_only_fields = [
+            "id","user","workspace","duration","hourly_rate","cost",
+            "created_at","created_by","assets"
+        ]

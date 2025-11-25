@@ -137,26 +137,27 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         return Response({"message": "Week approved successfully."})
 
     # ========== REJECT WEEK ==========
-    @action(detail=True, methods=["post"], url_path="reject-week")
-    def reject_week(self, request, pk=None):
+    @action(detail=True, methods=["post"], url_path="approve-week")
+    def approve_week(self, request, pk=None):
         approval = self.get_object()
 
         if not can_approve(request.user, approval.user, approval.workspace):
-            return Response({"error": "Unauthorized"}, status=403)
+            return Response({"error": "You are not authorized to approve this employee's time."}, status=403)
 
-        reason = request.data.get("reason", "")
-        approval.status = "rejected"
-        approval.notes = reason
+        # Approve & lock all entries
+        for item in approval.items.all():
+            item.approved = True
+            item.save()
+
+            e = item.time_entry
+            e.is_locked = True  # 🔐 Lock the time entry
+            e.save()
+
+        approval.status = "approved"
         approval.reviewed_by = request.user
         approval.save()
 
-        # Unlock entries for editing
-        for item in approval.items.all():
-            e = item.time_entry
-            e.is_locked = False
-            e.save()
-
-        return Response({"message": "Week rejected."})
+        return Response({"message": "Week approved successfully."})
 
     # ========== APPROVE / REJECT SINGLE ENTRY ==========
     @action(detail=True, methods=["post"], url_path="items/(?P<item_id>[^/.]+)/approve")
@@ -166,6 +167,9 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
 
         if not can_approve(request.user, approval.user, approval.workspace):
             return Response({"error": "Unauthorized"}, status=403)
+
+        if approval.status == "approved":
+            return Response({"error": "This week is already approved."}, status=400)
 
         item.approved = True
         item.save()
