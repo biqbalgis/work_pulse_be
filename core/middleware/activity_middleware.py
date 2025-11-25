@@ -15,7 +15,9 @@ class ActivityLoggingMiddleware(MiddlewareMixin):
 
             body = None
             try:
-                body = json.loads(request.body.decode("utf-8")) if request.body else None
+                if request.body:
+                    body_data = json.loads(request.body.decode("utf-8"))
+                    body = self.redact_sensitive_data(body_data)
             except Exception:
                 body = str(request.body)
 
@@ -32,3 +34,22 @@ class ActivityLoggingMiddleware(MiddlewareMixin):
                 user_agent=ua,
             )
         return None
+
+    def redact_sensitive_data(self, data):
+        """
+        Recursively redact sensitive keys in a dictionary or list.
+        """
+        SENSITIVE_KEYS = {'password', 'refresh', 'access', 'token', 'secret', 'confirm_password'}
+        
+        if isinstance(data, dict):
+            new_data = data.copy()
+            for key, value in new_data.items():
+                if key.lower() in SENSITIVE_KEYS:
+                    new_data[key] = "[REDACTED]"
+                else:
+                    new_data[key] = self.redact_sensitive_data(value)
+            return new_data
+        elif isinstance(data, list):
+            return [self.redact_sensitive_data(item) for item in data]
+        else:
+            return data
