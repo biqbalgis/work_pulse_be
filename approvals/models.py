@@ -4,7 +4,9 @@ from workspaces.models import Workspace
 from time_entries.models import TimeEntry
 import uuid
 
-class TimeEntryApproval(models.Model):
+from core.models import SoftDeleteModel
+
+class TimeEntryApproval(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -18,7 +20,7 @@ class TimeEntryApproval(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_approvals')
 
 
-class TimeEntryApprovalItem(models.Model):
+class TimeEntryApprovalItem(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     approval = models.ForeignKey(TimeEntryApproval, on_delete=models.CASCADE, related_name='items')
     time_entry = models.ForeignKey(TimeEntry, on_delete=models.CASCADE)

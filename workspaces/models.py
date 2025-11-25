@@ -16,7 +16,9 @@ class Workspace(SoftDeleteModel):
     def __str__(self):
         return self.name
 
-class WorkspaceMember(models.Model):
+from core.models import SoftDeleteModel
+
+class WorkspaceMember(SoftDeleteModel):
     ROLE_CHOICES = (
         ('admin', 'Admin'),
         ('manager', 'Manager'),

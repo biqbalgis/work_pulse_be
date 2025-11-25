@@ -3,7 +3,9 @@ from users.models import User
 from workspaces.models import Workspace
 import uuid
 
-class TimeOffType(models.Model):
+from core.models import SoftDeleteModel
+
+class TimeOffType(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     name = models.CharField(max_length=100)
@@ -12,7 +14,7 @@ class TimeOffType(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_timeofftypes')
 
-class TimeOffRequest(models.Model):
+class TimeOffRequest(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     user = models.ForeignKey(User, on_delete=models.CASCADE)

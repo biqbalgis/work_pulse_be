@@ -5,7 +5,9 @@ from workspaces.models import Workspace
 from time_entries.models import TimeEntry
 import uuid
 
-class Tag(models.Model):
+from core.models import SoftDeleteModel
+
+class Tag(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     name = models.CharField(max_length=100)
@@ -13,7 +15,7 @@ class Tag(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_tags')
 
-class TimeEntryTag(models.Model):
+class TimeEntryTag(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     time_entry = models.ForeignKey(TimeEntry, on_delete=models.CASCADE)
     tag = models.ForeignKey(Tag, on_delete=models.CASCADE)

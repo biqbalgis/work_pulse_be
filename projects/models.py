@@ -22,7 +22,7 @@ class Project(SoftDeleteModel):
         return self.name
 
 
-class JobTitle(models.Model):
+class JobTitle(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255, unique=True)
 
@@ -30,7 +30,7 @@ class JobTitle(models.Model):
         return self.name
 
 
-class ProjectRole(models.Model):
+class ProjectRole(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="project_roles")
     job_title = models.ForeignKey(JobTitle, on_delete=models.CASCADE)
@@ -42,7 +42,7 @@ class ProjectRole(models.Model):
     def __str__(self):
         return f"{self.project.name} - {self.job_title.name}"
 
-class UserProjectRole(models.Model):
+class UserProjectRole(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="project_roles")
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="user_roles")
