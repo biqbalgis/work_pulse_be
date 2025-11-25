@@ -7,17 +7,14 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      - WAIT_FOR_DB=true
+      - RUN_MIGRATIONS=true
+      - DB_PORT=${DB_PORT:-5432}
     ports:
       - "8000:8000"
     depends_on:
       - wait-for-db
-    command: >
-      sh -c "
-        echo Running migrations... &&
-        python manage.py migrate &&
-        echo Starting Gunicorn... &&
-        gunicorn work_pulse_be.wsgi:application --bind 0.0.0.0:8000
-      "
 
   wait-for-db:
     image: alpine
@@ -28,7 +25,7 @@ services:
       sh -c "
         apk add --no-cache netcat-openbsd;
         echo Waiting for database...;
-        while ! nc -z $DB_HOST $DB_PORT; do
+        while ! nc -z $DB_HOST ${DB_PORT:-5432}; do
           sleep 2;
         done;
         echo Database is up;
