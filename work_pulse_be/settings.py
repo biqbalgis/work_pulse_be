@@ -40,6 +40,7 @@ MIDDLEWARE = [
     'core.middleware.activity_middleware.ActivityLoggingMiddleware',
     'core.middleware.error_logging_middleware.ErrorLoggingMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -140,10 +141,8 @@ USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
-# STATIC_URL = '/static/'
-#
-# # STATICFILES_DIRS = [
-# #     BASE_DIR / "static",   # only if you have a local "static" folder
-# # ]
-#
-# STATIC_ROOT = BASE_DIR / "staticfiles"   # used only for collectstatic
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
