@@ -55,6 +55,8 @@ class Command(BaseCommand):
                 username="admin",
                 email="admin@example.com",
                 password="admin123",
+                first_name="Admin",
+                last_name="User",
             )
 
         ROLES = ["admin", "manager", "user"]
@@ -64,7 +66,9 @@ class Command(BaseCommand):
             u = User.objects.create_user(
                 username=emailval,
                 email=emailval,
-                password="password123"
+                password="password123",
+                first_name=fake.first_name(),
+                last_name=fake.last_name(),
             )
             # assign user to a random workspace
             ws = random.choice(self.workspaces)
@@ -199,6 +203,8 @@ class Command(BaseCommand):
                     hourly_rate=upr.hourly_rate,
                     cost=upr.hourly_rate * hours,
                     billable=random.choice([True, True, False]),
+                    meals=random.choice([True, False]),
+                    hotels=random.choice([True, False]),
                 )
 
                 # random asset usage
