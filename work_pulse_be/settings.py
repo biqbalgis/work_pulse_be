@@ -109,6 +109,7 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.MultiPartParser',
         'rest_framework.parsers.FormParser',
     ],
+    'EXCEPTION_HANDLER': 'core.utils.exception_handler.custom_exception_handler',
 }
 
 SIMPLE_JWT = {
