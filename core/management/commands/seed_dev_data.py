@@ -205,6 +205,7 @@ class Command(BaseCommand):
                     billable=random.choice([True, True, False]),
                     meals=random.choice([True, False]),
                     hotels=random.choice([True, False]),
+                    description=fake.text(max_nb_chars=random.randint(50, 200)),
                 )
 
                 # random asset usage
