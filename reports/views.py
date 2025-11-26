@@ -14,6 +14,7 @@ from projects.models import Project
 from time_entries.models import TimeEntry
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceManager, IsSuperUser, IsWorkspaceUser
+from organization_asset.models import AssetUsage
 
 
 # Create your views here.
@@ -281,3 +282,343 @@ class EmployeePayrollDashboard(APIView):
             })
 
         return Response(result)
+
+
+class DailyWorkReportView(APIView):
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def get(self, request):
+        date_str = request.GET.get("date")
+        workspace_id = request.GET.get("workspace_id")
+        project_id = request.GET.get("project_id")
+
+        if not date_str:
+            return Response({"error": "Date is required"}, status=400)
+
+        try:
+            date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+
+        # Base filter
+        filters = {"start_time__date": date}
+        if workspace_id:
+            filters["workspace_id"] = workspace_id
+        if project_id:
+            filters["project_id"] = project_id
+
+        # 6) Get descriptions grouped by user + date
+        desc_lookup = {}
+        for t in base_query:
+            key = (t.start_time.date(), t.user_id)
+            desc_lookup.setdefault(key, [])
+            if t.description:
+                desc_lookup[key].append(t.description)
+
+        result = {}
+
+        for e in entries:
+            date_str = str(e["date"])
+            hrs = e["total_minutes"] / 60.0
+
+            # RT/OT rules for daily payroll
+            rt = min(hrs, 8.0)
+            ot = max(hrs - 8.0, 0.0)
+
+            key = (e["date"], e["user_id"])
+            descriptions = desc_lookup.get(key, [])
+
+            emp_data = {
+                "employee_id": e["user_id"],
+                "employee_name": f"{e['user__first_name']} {e['user__last_name']}",
+                "total_hours": round(hrs, 2),
+                "rt_hours": round(rt, 2),
+                "ot_hours": round(ot, 2),
+                "descriptions": descriptions
+            }
+
+            result.setdefault(date_str, []).append(emp_data)
+
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class DailyDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def get(self, request, employee_id, date):
+        from datetime import datetime
+        from time_entries.models import TimeEntry
+        from approvals.models import TimeEntryApprovalItem
+
+        # Parse date
+        date = datetime.strptime(date, "%Y-%m-%d").date()
+
+        # Fetch ALL entries for that date
+        entries = list(TimeEntry.objects.filter(
+            user_id=employee_id,
+            start_time__date=date
+        ).select_related("project", "job_title").order_by("start_time"))
+
+        # Calculate approval status map
+        approval_map = {
+            a.time_entry_id: a.approved
+            for a in TimeEntryApprovalItem.objects.filter(
+                time_entry_id__in=[e.id for e in entries]
+            )
+        }
+
+        # ----------- RT/OT CALCULATION -------------
+        total_minutes = sum(e.duration for e in entries)
+        total_hours = total_minutes / 60.0
+
+        remaining_rt = 8.0  # daily limit
+
+        def allocate_rt_ot(entry_minutes):
+            nonlocal remaining_rt
+            hours = entry_minutes / 60.0
+
+            if remaining_rt <= 0:
+                return 0.0, hours  # all OT
+
+            rt_hours = min(hours, remaining_rt)
+            remaining_rt -= rt_hours
+            ot_hours = hours - rt_hours
+            return rt_hours, ot_hours
+
+        # ---------------------------------------------
+
+        result = {
+            "date": str(date),
+            "employee_id": employee_id,
+            "entries": []
+        }
+
+        for e in entries:
+            rt, ot = allocate_rt_ot(e.duration)
+
+            result["entries"].append({
+                "id": str(e.id),
+                "start_time": e.start_time.strftime("%H:%M"),
+                "end_time": e.end_time.strftime("%H:%M") if e.end_time else None,
+                "duration_hours": round(e.duration / 60.0, 2),
+                "rt_hours": round(rt, 2),
+                "ot_hours": round(ot, 2),
+                "project": e.project.name if e.project else None,
+                "billable": e.billable,
+                "meals": getattr(e, "meals", False),
+                "hotels": getattr(e, "hotels", False),
+                "job_title": e.job_title.name if e.job_title else None,
+                "approved": approval_map.get(e.id, None),
+                "description": e.description
+            })
+
+        return Response(result, status=200)
+
+
+
+class EmployeePayrollDashboard(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        period = request.GET.get("period", "week")
+        start = request.GET.get("start")
+        end = request.GET.get("end")
+
+        # If no custom dates, auto-detect current week/month
+        today = datetime.utcnow().date()
+
+        if not start or not end:
+            if period == "month":
+                start = today.replace(day=1)
+                end = (start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+            else:  # weekly (Sunday -> Saturday)
+                days_until_sunday = (today.weekday() + 1) % 7
+                start = today - timedelta(days=days_until_sunday)
+                end = start + timedelta(days=6)
+        else:
+            start = datetime.strptime(start, "%Y-%m-%d").date()
+            end = datetime.strptime(end, "%Y-%m-%d").date()
+
+        # Fetch only APPROVED items
+        items = TimeEntryApprovalItem.objects.filter(
+            approval__status="approved",
+            time_entry__start_time__date__range=[start, end]
+        ).select_related("time_entry__user", "time_entry__project")
+
+        # Group by employee
+        employees = {}
+        for item in items:
+            u = item.time_entry.user
+            if u.id not in employees:
+                employees[u.id] = {
+                    "employee_id": u.id,
+                    "employee_name": u.get_full_name(),
+                    "items": []
+                }
+            employees[u.id]["items"].append(item)
+
+        # Calculate metrics using existing helper
+        result = []
+        for emp in employees.values():
+            metrics = calculate_rt_ot_and_cost(emp["items"])
+            result.append({
+                "employee_id": emp["employee_id"],
+                "employee_name": emp["employee_name"],
+                "hours": {
+                    "total": metrics["total_hours"],
+                    "regular": metrics["rt_hours"],
+                    "overtime": metrics["ot_hours"]
+                },
+                "cost": {
+                    "total": metrics["total_cost"],
+                    "regular_cost": metrics.get("rt_cost", 0),
+                    "overtime_cost": metrics.get("ot_cost", 0)
+                }
+            })
+
+        return Response(result)
+
+
+class DailyWorkReportView(APIView):
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def get(self, request):
+        date_str = request.GET.get("date")
+        workspace_id = request.GET.get("workspace_id")
+        project_id = request.GET.get("project_id")
+
+        if not date_str:
+            return Response({"error": "Date is required"}, status=400)
+
+        try:
+            date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+
+        # Base filter
+        filters = {"start_time__date": date}
+        if workspace_id:
+            filters["workspace_id"] = workspace_id
+        if project_id:
+            filters["project_id"] = project_id
+
+        # Fetch Time Entries with related data
+        time_entries = TimeEntry.objects.filter(**filters).select_related(
+            "user", "job_title", "project"
+        ).prefetch_related("asset_usages", "asset_usages__asset")
+
+        # Data Containers
+        entries_map = {} # Key: (user_id, job_title_id)
+        descriptions = []
+        
+        # Cost Aggregation
+        personnel_costs = {}  # Key: Job Title Name
+        asset_costs = {}      # Key: Asset Name
+
+        for entry in time_entries:
+            # 1. Entries Aggregation
+            user_id = entry.user.id
+            role_id = entry.job_title.id if entry.job_title else None
+            key = (user_id, role_id)
+            
+            user_name = entry.user.get_full_name()
+            role_name = entry.job_title.name if entry.job_title else "N/A"
+            hours = entry.duration / 60.0
+            
+            if key not in entries_map:
+                entries_map[key] = {
+                    "name": user_name,
+                    "role": role_name,
+                    "supplies": 0,
+                    "equip": 0,
+                    "hours": 0
+                }
+            
+            entries_map[key]["hours"] += hours
+            
+            # Count assets for this entry
+            for usage in entry.asset_usages.all():
+                asset = usage.asset
+                if asset.charge_type == "quantity":
+                    entries_map[key]["supplies"] += 1
+                    
+                    # Asset Cost Aggregation
+                    if asset.name not in asset_costs:
+                        asset_costs[asset.name] = {
+                            "item": asset.name,
+                            "hours": 0,
+                            "units": 0,
+                            "rate": asset.quantity_rate,
+                            "cost": 0
+                        }
+                    asset_costs[asset.name]["units"] += usage.quantity_used or 0
+                    asset_costs[asset.name]["cost"] += usage.cost
+
+                elif asset.charge_type == "hourly":
+                    entries_map[key]["equip"] += 1
+                    
+                    # Asset Cost Aggregation
+                    if asset.name not in asset_costs:
+                        asset_costs[asset.name] = {
+                            "item": asset.name,
+                            "hours": 0,
+                            "units": 0,
+                            "rate": asset.hourly_rate,
+                            "cost": 0
+                        }
+                    asset_costs[asset.name]["hours"] += hours 
+                    asset_costs[asset.name]["cost"] += usage.cost
+
+            # 2. Descriptions
+            if entry.description:
+                descriptions.append(entry.description)
+
+            # 3. Personnel Cost Aggregation
+            if role_name not in personnel_costs:
+                personnel_costs[role_name] = {
+                    "item": role_name,
+                    "hours": 0,
+                    "units": 0, 
+                    "rate": entry.hourly_rate, 
+                    "cost": 0
+                }
+            personnel_costs[role_name]["hours"] += hours
+            personnel_costs[role_name]["cost"] += entry.cost
+
+        # Convert entries map to list
+        entries_list = []
+        for data in entries_map.values():
+            data["hours"] = round(data["hours"], 2)
+            entries_list.append(data)
+
+        # Format Cost Summary
+        cost_summary = []
+        
+        # Add Personnel
+        for role, data in personnel_costs.items():
+            cost_summary.append({
+                "item": data["item"],
+                "hours": round(data["hours"], 2),
+                "units": None,
+                "rate": data["rate"],
+                "cost": round(data["cost"], 2)
+            })
+            
+        # Add Assets
+        for asset, data in asset_costs.items():
+            cost_summary.append({
+                "item": data["item"],
+                "hours": round(data["hours"], 2) if data["hours"] > 0 else None,
+                "units": round(data["units"], 2) if data["units"] > 0 else None,
+                "rate": data["rate"],
+                "cost": round(data["cost"], 2)
+            })
+
+        response_data = {
+            "date": str(date),
+            "time_entries": entries_list,
+            "descriptions": descriptions,
+            "cost_summary": cost_summary
+        }
+
+        return Response(response_data)
