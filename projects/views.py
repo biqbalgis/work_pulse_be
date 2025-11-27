@@ -17,6 +17,11 @@ def get_user_workspace(request):
 
 class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
+
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
     # permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
     permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdminOrSuperUser]
 
