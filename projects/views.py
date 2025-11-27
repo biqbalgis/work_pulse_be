@@ -27,12 +27,23 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        queryset = Project.objects.filter(is_deleted=False)
 
-        if user.is_superuser:
-            return Project.objects.filter(is_deleted=False)
+        if not user.is_superuser:
+            workspace_ids = WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
+            queryset = queryset.filter(workspace_id__in=workspace_ids)
 
-        workspace_ids = WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
-        return Project.objects.filter(workspace_id__in=workspace_ids, is_deleted=False)
+        # Apply filters
+        workspace_id = self.request.query_params.get('workspace')
+        client_id = self.request.query_params.get('client')
+
+        if workspace_id:
+            queryset = queryset.filter(workspace_id=workspace_id)
+        
+        if client_id:
+            queryset = queryset.filter(client=client_id)
+
+        return queryset
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -71,7 +82,13 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         workspace = get_user_workspace(self.request)
-        return ProjectRole.objects.filter(project__workspace=workspace)
+        queryset = ProjectRole.objects.filter(project__workspace=workspace)
+
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        
+        return queryset
 
     def perform_create(self, serializer):
         project_role = serializer.save()
