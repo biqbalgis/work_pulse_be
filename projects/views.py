@@ -27,19 +27,27 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Project.objects.filter(is_deleted=False)
+        # Base queryset: only active projects and not deleted
+        queryset = Project.objects.filter(is_deleted=False, is_active=True)
 
-        if not user.is_superuser:
+        if user.is_superuser:
+            # Superuser MUST provide workspace parameter
+            workspace_id = self.request.query_params.get('workspace')
+            if not workspace_id:
+                raise ValidationError({"workspace": "Workspace parameter is required for superusers."})
+            queryset = queryset.filter(workspace_id=workspace_id)
+        else:
+            # Non-superuser: filter by their workspace membership
             workspace_ids = WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
             queryset = queryset.filter(workspace_id__in=workspace_ids)
+            
+            # Optional: allow further filtering if they belong to multiple workspaces (though usually 1)
+            workspace_id = self.request.query_params.get('workspace')
+            if workspace_id:
+                queryset = queryset.filter(workspace_id=workspace_id)
 
-        # Apply filters
-        workspace_id = self.request.query_params.get('workspace')
+        # Apply other filters
         client_id = self.request.query_params.get('client')
-
-        if workspace_id:
-            queryset = queryset.filter(workspace_id=workspace_id)
-        
         if client_id:
             queryset = queryset.filter(client=client_id)
 

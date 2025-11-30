@@ -17,15 +17,41 @@ class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
     lookup_field = 'id'
+
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
+
     def get_queryset(self):
         user = self.request.user
+        # Base queryset: only active users
+        queryset = User.objects.filter(is_active=True)
+
         if user.is_superuser:
-            return User.objects.all()
-        workspace_ids = get_user_workspace_ids(user)
-        member_ids = WorkspaceMember.objects.filter(
-            workspace_id__in=workspace_ids
-        ).values_list('user_id', flat=True)
-        return User.objects.filter(id__in=member_ids)
+            workspace_id = self.request.query_params.get('workspace')
+            if not workspace_id:
+                raise serializers.ValidationError({"workspace": "Workspace parameter is required for superusers."})
+            
+            # Filter users belonging to this workspace
+            member_ids = WorkspaceMember.objects.filter(workspace_id=workspace_id).values_list('user_id', flat=True)
+            queryset = queryset.filter(id__in=member_ids)
+        else:
+            workspace_ids = get_user_workspace_ids(user)
+            member_ids = WorkspaceMember.objects.filter(
+                workspace_id__in=workspace_ids
+            ).values_list('user_id', flat=True)
+            queryset = queryset.filter(id__in=member_ids)
+            
+            # Optional: allow further filtering
+            workspace_id = self.request.query_params.get('workspace')
+            if workspace_id:
+                 # Ensure user belongs to this workspace
+                 if str(workspace_id) in [str(wid) for wid in workspace_ids]:
+                     member_ids = WorkspaceMember.objects.filter(workspace_id=workspace_id).values_list('user_id', flat=True)
+                     queryset = queryset.filter(id__in=member_ids)
+
+        return queryset
 
     def perform_create(self, serializer):
         creator = self.request.user

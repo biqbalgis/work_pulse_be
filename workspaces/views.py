@@ -9,6 +9,11 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
     serializer_class = WorkspaceSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
+
     def get_queryset(self):
         base_queryset = Workspace.objects.all().prefetch_related(
             Prefetch('members', queryset=WorkspaceMember.objects.select_related('user'))

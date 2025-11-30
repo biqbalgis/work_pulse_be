@@ -9,12 +9,30 @@ class ClientViewSet(viewsets.ModelViewSet):
     serializer_class = ClientSerializer
     permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
 
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
+
     def get_queryset(self):
         user = self.request.user
+        queryset = Client.objects.filter(is_deleted=False)
+
         if user.is_superuser:
-            return Client.objects.filter(is_deleted=False)
-        workspace_ids = WorkspaceMember.objects.filter(user=user).values_list('workspace_id', flat=True)
-        return Client.objects.filter(workspace_id__in=workspace_ids, is_deleted=False)
+            workspace_id = self.request.query_params.get('workspace')
+            if not workspace_id:
+                raise serializers.ValidationError({"workspace": "Workspace parameter is required for superusers."})
+            queryset = queryset.filter(workspace_id=workspace_id)
+        else:
+            workspace_ids = WorkspaceMember.objects.filter(user=user).values_list('workspace_id', flat=True)
+            queryset = queryset.filter(workspace_id__in=workspace_ids)
+            
+            # Optional: allow further filtering
+            workspace_id = self.request.query_params.get('workspace')
+            if workspace_id:
+                queryset = queryset.filter(workspace_id=workspace_id)
+
+        return queryset
 
     def perform_create(self, serializer):
         user = self.request.user
