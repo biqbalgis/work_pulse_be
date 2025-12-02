@@ -41,6 +41,11 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 class WorkspaceMemberViewSet(viewsets.ModelViewSet):
     serializer_class = WorkspaceMemberSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
     def get_queryset(self):
         workspace_id = self.request.query_params.get("workspace", None)
 
