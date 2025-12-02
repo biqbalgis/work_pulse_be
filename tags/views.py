@@ -9,6 +9,11 @@ class TagViewSet(viewsets.ModelViewSet):
     serializer_class = TagSerializer
     permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
 
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
+
     def get_queryset(self):
         user = self.request.user
         workspace_ids = get_user_workspace_ids(user)

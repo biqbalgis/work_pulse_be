@@ -8,6 +8,11 @@ class OrganizationAssetViewSet(viewsets.ModelViewSet):
     serializer_class = OrganizationAssetSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
+
     def get_queryset(self):
         user = self.request.user
 

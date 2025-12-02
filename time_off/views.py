@@ -9,6 +9,11 @@ class TimeOffTypeViewSet(viewsets.ModelViewSet):
     serializer_class = TimeOffTypeSerializer
     permission_classes = [permissions.IsAuthenticated, IsWorkspaceUser]
 
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
+
     def get_queryset(self):
         user = self.request.user
         workspace_ids = get_user_workspace_ids(user)
@@ -23,6 +28,11 @@ class TimeOffTypeViewSet(viewsets.ModelViewSet):
 class TimeOffRequestViewSet(viewsets.ModelViewSet):
     serializer_class = TimeOffRequestSerializer
     permission_classes = [permissions.IsAuthenticated, IsWorkspaceUser]
+
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
 
     def get_queryset(self):
         user = self.request.user

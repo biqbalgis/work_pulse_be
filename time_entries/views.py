@@ -16,6 +16,11 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
     serializer_class = TimeEntrySerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
+
     # -----------------------------------------------------
     # ✔ FILTER BY WORKSPACE FOR SECURITY
     # -----------------------------------------------------
