@@ -17,7 +17,7 @@ class TagViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         workspace_ids = get_user_workspace_ids(user)
-        return Tag.objects.filter(workspace_id__in=workspace_ids)
+        return Tag.objects.filter(workspace_id__in=workspace_ids, is_deleted=False)
 
     def perform_create(self, serializer):
         workspace = get_user_primary_workspace(self.request.user)

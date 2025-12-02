@@ -17,7 +17,7 @@ class TimeOffTypeViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         workspace_ids = get_user_workspace_ids(user)
-        return TimeOffType.objects.filter(workspace_id__in=workspace_ids)
+        return TimeOffType.objects.filter(workspace_id__in=workspace_ids, is_deleted=False)
 
     def perform_create(self, serializer):
         workspace = get_user_primary_workspace(self.request.user)
@@ -37,7 +37,7 @@ class TimeOffRequestViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         workspace_ids = get_user_workspace_ids(user)
-        return TimeOffRequest.objects.filter(workspace_id__in=workspace_ids)
+        return TimeOffRequest.objects.filter(workspace_id__in=workspace_ids, is_deleted=False)
 
     def perform_create(self, serializer):
         workspace = get_user_primary_workspace(self.request.user)

@@ -75,7 +75,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         instance.delete()
 
 class JobTitleViewSet(viewsets.ModelViewSet):
-    queryset = JobTitle.objects.all()
+    queryset = JobTitle.objects.filter(is_deleted=False)
     serializer_class = JobTitleSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -90,7 +90,7 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         workspace = get_user_workspace(self.request)
-        queryset = ProjectRole.objects.filter(project__workspace=workspace)
+        queryset = ProjectRole.objects.filter(project__workspace=workspace, is_deleted=False)
 
         project_id = self.request.query_params.get('project')
         if project_id:
@@ -225,7 +225,7 @@ class UserProjectRoleViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         workspace = get_user_workspace(self.request)
-        return UserProjectRole.objects.filter(project__workspace=workspace)
+        return UserProjectRole.objects.filter(project__workspace=workspace, is_deleted=False)
 
     def perform_create(self, serializer):
         user = serializer.validated_data.get("user")

@@ -25,8 +25,8 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        # Base queryset: only active users
-        queryset = User.objects.filter(is_active=True)
+        # Base queryset: only active users and not deleted
+        queryset = User.objects.filter(is_active=True, is_deleted=False)
 
         if user.is_superuser:
             workspace_id = self.request.query_params.get('workspace')

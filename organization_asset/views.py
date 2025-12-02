@@ -17,7 +17,7 @@ class OrganizationAssetViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         if user.is_superuser:
-            return OrganizationAsset.objects.filter(is_active=True)
+            return OrganizationAsset.objects.filter(is_active=True, is_deleted=False)
 
         # Get workspace for logged-in user
         workspace_ids = WorkspaceMember.objects.filter(
@@ -26,7 +26,8 @@ class OrganizationAssetViewSet(viewsets.ModelViewSet):
 
         return OrganizationAsset.objects.filter(
             workspace_id__in=workspace_ids,
-            is_active=True
+            is_active=True,
+            is_deleted=False
         )
 
     def perform_create(self, serializer):

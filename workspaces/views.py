@@ -51,11 +51,15 @@ class WorkspaceMemberViewSet(viewsets.ModelViewSet):
 
         # Superuser sees all
         if self.request.user.is_superuser:
-            qs = WorkspaceMember.objects.all()
+            qs = WorkspaceMember.objects.filter(is_deleted=False, is_active=True)
 
         else:
             # Normal users see only their workspace
-            qs = WorkspaceMember.objects.filter(workspace__members__user=self.request.user)
+            qs = WorkspaceMember.objects.filter(
+                workspace__members__user=self.request.user,
+                is_deleted=False,
+                is_active=True
+            )
 
         # Filter for specific workspace if provided
         if workspace_id:

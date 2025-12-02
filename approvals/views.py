@@ -13,7 +13,7 @@ from .utils import can_approve, calculate_rt_ot_and_cost
 
 
 class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
-    queryset = TimeEntryApproval.objects.all()
+    queryset = TimeEntryApproval.objects.filter(is_deleted=False)
     serializer_class = TimeEntryApprovalSerializer
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
 
