@@ -122,8 +122,9 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         except Project.DoesNotExist:
             raise ValidationError("Invalid project ID.")
 
-        if not WorkspaceMember.objects.filter(user=user, workspace=project.workspace).exists():
-            raise ValidationError("You do not belong to this workspace.")
+        if not request.user.is_superuser:
+            if not WorkspaceMember.objects.filter(user=user, workspace=project.workspace).exists():
+                raise ValidationError("You do not belong to this workspace.")
 
         # Step 1: Create or get job title
         job_title, created = JobTitle.objects.get_or_create(
