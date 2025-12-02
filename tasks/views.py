@@ -12,11 +12,27 @@ class TaskViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdminOrSuperUser]
 
     def get_queryset(self):
+        queryset = Task.objects.filter(is_deleted=False, is_active=True)
         user = self.request.user
+        workspace_id = self.request.query_params.get('workspace')
+        project_id = self.request.query_params.get('project')
+
         if user.is_superuser:
-            return Task.objects.filter(is_deleted=False)
-        workspace_ids = WorkspaceMember.objects.filter(user=user).values_list('workspace_id', flat=True)
-        return Task.objects.filter(project__workspace_id__in=workspace_ids, is_deleted=False)
+            if workspace_id and project_id:
+                return queryset.filter(project__workspace_id=workspace_id, project_id=project_id)
+            return Task.objects.none()
+
+        # For regular users
+        if project_id:
+            workspace_ids = WorkspaceMember.objects.filter(user=user).values_list('workspace_id', flat=True)
+            return queryset.filter(project_id=project_id, project__workspace_id__in=workspace_ids)
+        
+        return Task.objects.none()
+
+    def list(self, request, *args, **kwargs):
+        if request.query_params.get('pagination') == 'false':
+            self.pagination_class = None
+        return super().list(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         user = self.request.user

@@ -75,7 +75,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         instance.delete()
 
 class JobTitleViewSet(viewsets.ModelViewSet):
-    queryset = JobTitle.objects.all()
+    queryset = JobTitle.objeclts.all()
     serializer_class = JobTitleSerializer
     permission_classes = [permissions.IsAuthenticated]
 
