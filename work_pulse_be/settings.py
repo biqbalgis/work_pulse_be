@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     'time_off',
     'tags',
     'organization_asset',
+    'reports',
     'corsheaders',
 
 ]

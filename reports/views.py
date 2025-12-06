@@ -479,24 +479,42 @@ class EmployeePayrollDashboard(APIView):
         return Response(result)
 
 
+
 class DailyWorkReportView(APIView):
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
 
-    def get(self, request):
-        date_str = request.GET.get("date")
-        workspace_id = request.GET.get("workspace_id")
-        project_id = request.GET.get("project_id")
+    def post(self, request):
+        return self.get(request)
 
-        if not date_str:
-            return Response({"error": "Date is required"}, status=400)
+    def get(self, request):
+        # Support both GET query params and POST body
+        data = request.GET if request.method == 'GET' else request.data
+        
+        date_str = data.get("date")
+        from_date_str = data.get("from")
+        to_date_str = data.get("to")
+        
+        workspace_id = data.get("workspace_id")
+        project_id = data.get("project_id")
+
+        # Determine date range
+        start_date = None
+        end_date = None
 
         try:
-            date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            if from_date_str and to_date_str:
+                start_date = datetime.strptime(from_date_str, "%Y-%m-%d").date()
+                end_date = datetime.strptime(to_date_str, "%Y-%m-%d").date()
+            elif date_str:
+                start_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                end_date = start_date
+            else:
+                return Response({"error": "Either 'date' or 'from' and 'to' parameters are required"}, status=400)
         except ValueError:
             return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
 
         # Base filter
-        filters = {"start_time__date": date}
+        filters = {"start_time__date__range": [start_date, end_date]}
         if workspace_id:
             filters["workspace_id"] = workspace_id
         if project_id:
@@ -505,120 +523,160 @@ class DailyWorkReportView(APIView):
         # Fetch Time Entries with related data
         time_entries = TimeEntry.objects.filter(**filters).select_related(
             "user", "job_title", "project"
-        ).prefetch_related("asset_usages", "asset_usages__asset")
+        ).prefetch_related("asset_usages", "asset_usages__asset").order_by("start_time")
 
-        # Data Containers
-        entries_map = {} # Key: (user_id, job_title_id)
-        descriptions = []
+        # Process data day by day
+        report_data_by_date = {}
         
-        # Cost Aggregation
-        personnel_costs = {}  # Key: Job Title Name
-        asset_costs = {}      # Key: Asset Name
-
+        # Iterate through all days in range to ensure empty days are present if needed, 
+        # or just iterate through entries if we only want days with data.
+        # User asked for "date wise json response".
+        
+        # Group entries by date
+        entries_by_date = {}
         for entry in time_entries:
-            # 1. Entries Aggregation
-            user_id = entry.user.id
-            role_id = entry.job_title.id if entry.job_title else None
-            key = (user_id, role_id)
+            d_str = str(entry.start_time.date())
+            if d_str not in entries_by_date:
+                entries_by_date[d_str] = []
+            entries_by_date[d_str].append(entry)
+
+        for d_str, day_entries in entries_by_date.items():
+            # Data Containers for this day
+            entries_map = {} # Key: (user_id, job_title_id)
+            descriptions = []
             
-            user_name = entry.user.get_full_name()
-            role_name = entry.job_title.name if entry.job_title else "N/A"
-            hours = entry.duration / 60.0
+            # Cost Aggregation
+            personnel_costs = {}  # Key: Job Title Name
+            asset_costs = {}      # Key: Asset Name
+
+            for entry in day_entries:
+                # 1. Entries Aggregation
+                user_id = entry.user.id
+                role_id = entry.job_title.id if entry.job_title else None
+                key = (user_id, role_id)
+                
+                user_name = entry.user.get_full_name()
+                role_name = entry.job_title.name if entry.job_title else "N/A"
+                hours = entry.duration / 60.0
+                
+                if key not in entries_map:
+                    entries_map[key] = {
+                        "name": user_name,
+                        "role": role_name,
+                        "supplies": 0,
+                        "equip": 0,
+                        "hours": 0
+                    }
+                
+                entries_map[key]["hours"] += float(hours)
+                
+                # Count assets for this entry
+                for usage in entry.asset_usages.all():
+                    asset = usage.asset
+                    if asset.charge_type == "quantity":
+                        entries_map[key]["supplies"] += 1
+                        
+                        # Asset Cost Aggregation
+                        if asset.name not in asset_costs:
+                            asset_costs[asset.name] = {
+                                "item": asset.name,
+                                "hours": 0.0,
+                                "units": 0.0,
+                                "rate": float(asset.quantity_rate) if asset.quantity_rate else 0.0,
+                                "cost": 0.0
+                            }
+                        asset_costs[asset.name]["units"] += float(usage.quantity_used or 0)
+                        asset_costs[asset.name]["cost"] += float(usage.cost)
+
+                    elif asset.charge_type == "hourly":
+                        entries_map[key]["equip"] += 1
+                        
+                        # Asset Cost Aggregation
+                        if asset.name not in asset_costs:
+                            asset_costs[asset.name] = {
+                                "item": asset.name,
+                                "hours": 0.0,
+                                "units": 0.0,
+                                "rate": float(asset.hourly_rate) if asset.hourly_rate else 0.0,
+                                "cost": 0.0
+                            }
+                        asset_costs[asset.name]["hours"] += float(hours)
+                        asset_costs[asset.name]["cost"] += float(usage.cost)
+
+                # 2. Descriptions
+                if entry.description:
+                    descriptions.append(entry.description)
+
+                # 3. Personnel Cost Aggregation
+                if role_name not in personnel_costs:
+                    personnel_costs[role_name] = {
+                        "item": role_name,
+                        "hours": 0.0,
+                        "units": 0, 
+                        "rate": float(entry.hourly_rate) if entry.hourly_rate else 0.0, 
+                        "cost": 0.0
+                    }
+                personnel_costs[role_name]["hours"] += float(hours)
+                personnel_costs[role_name]["cost"] += float(entry.cost)
+
+            # Convert entries map to list
+            entries_list = []
+            for data in entries_map.values():
+                data["hours"] = round(data["hours"], 2)
+                entries_list.append(data)
+
+            # Format Cost Summary
+            cost_summary = []
             
-            if key not in entries_map:
-                entries_map[key] = {
-                    "name": user_name,
-                    "role": role_name,
-                    "supplies": 0,
-                    "equip": 0,
-                    "hours": 0
-                }
-            
-            entries_map[key]["hours"] += hours
-            
-            # Count assets for this entry
-            for usage in entry.asset_usages.all():
-                asset = usage.asset
-                if asset.charge_type == "quantity":
-                    entries_map[key]["supplies"] += 1
-                    
-                    # Asset Cost Aggregation
-                    if asset.name not in asset_costs:
-                        asset_costs[asset.name] = {
-                            "item": asset.name,
-                            "hours": 0,
-                            "units": 0,
-                            "rate": asset.quantity_rate,
-                            "cost": 0
-                        }
-                    asset_costs[asset.name]["units"] += usage.quantity_used or 0
-                    asset_costs[asset.name]["cost"] += usage.cost
+            # Add Personnel
+            for role, data in personnel_costs.items():
+                cost_summary.append({
+                    "item": data["item"],
+                    "hours": round(data["hours"], 2),
+                    "units": None,
+                    "rate": data["rate"],
+                    "cost": round(data["cost"], 2)
+                })
+                
+            # Add Assets
+            for asset, data in asset_costs.items():
+                cost_summary.append({
+                    "item": data["item"],
+                    "hours": round(data["hours"], 2) if data["hours"] > 0 else None,
+                    "units": round(data["units"], 2) if data["units"] > 0 else None,
+                    "rate": data["rate"],
+                    "cost": round(data["cost"], 2)
+                })
 
-                elif asset.charge_type == "hourly":
-                    entries_map[key]["equip"] += 1
-                    
-                    # Asset Cost Aggregation
-                    if asset.name not in asset_costs:
-                        asset_costs[asset.name] = {
-                            "item": asset.name,
-                            "hours": 0,
-                            "units": 0,
-                            "rate": asset.hourly_rate,
-                            "cost": 0
-                        }
-                    asset_costs[asset.name]["hours"] += hours 
-                    asset_costs[asset.name]["cost"] += usage.cost
+            report_data_by_date[d_str] = {
+                "date": d_str,
+                "time_entries": entries_list,
+                "descriptions": descriptions,
+                "cost_summary": cost_summary
+            }
 
-            # 2. Descriptions
-            if entry.description:
-                descriptions.append(entry.description)
-
-            # 3. Personnel Cost Aggregation
-            if role_name not in personnel_costs:
-                personnel_costs[role_name] = {
-                    "item": role_name,
-                    "hours": 0,
-                    "units": 0, 
-                    "rate": entry.hourly_rate, 
-                    "cost": 0
-                }
-            personnel_costs[role_name]["hours"] += hours
-            personnel_costs[role_name]["cost"] += entry.cost
-
-        # Convert entries map to list
-        entries_list = []
-        for data in entries_map.values():
-            data["hours"] = round(data["hours"], 2)
-            entries_list.append(data)
-
-        # Format Cost Summary
-        cost_summary = []
+        # Create LEM Report
+        from .models import LEMReport
         
-        # Add Personnel
-        for role, data in personnel_costs.items():
-            cost_summary.append({
-                "item": data["item"],
-                "hours": round(data["hours"], 2),
-                "units": None,
-                "rate": data["rate"],
-                "cost": round(data["cost"], 2)
-            })
-            
-        # Add Assets
-        for asset, data in asset_costs.items():
-            cost_summary.append({
-                "item": data["item"],
-                "hours": round(data["hours"], 2) if data["hours"] > 0 else None,
-                "units": round(data["units"], 2) if data["units"] > 0 else None,
-                "rate": data["rate"],
-                "cost": round(data["cost"], 2)
-            })
+        project_obj = None
+        if project_id:
+            project_obj = Project.objects.filter(id=project_id).first()
+
+        lem_report = LEMReport.objects.create(
+            requester=request.user,
+            project=project_obj,
+            report_data={} # Temporary
+        )
 
         response_data = {
-            "date": str(date),
-            "time_entries": entries_list,
-            "descriptions": descriptions,
-            "cost_summary": cost_summary
+            "lem_number": lem_report.lem_number,
+            "requester": f"{request.user.first_name} {request.user.last_name}",
+            "project_name": project_obj.name if project_obj else "N/A",
+            "report_data": report_data_by_date
         }
+        
+        # Save complete JSON to DB
+        lem_report.report_data = response_data
+        lem_report.save()
 
-        return Response(response_data)
+        return Response(response_data, status=status.HTTP_200_OK)
