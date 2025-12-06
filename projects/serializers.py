@@ -47,6 +47,14 @@ class UserProjectRoleSerializer(serializers.ModelSerializer):
         fields = ['id', 'user', 'project', 'job_title', 'hourly_rate']
 
 
+
+class CurrentUserRoleSerializer(serializers.ModelSerializer):
+    job_title_name = serializers.CharField(source='job_title.name', read_only=True)
+    
+    class Meta:
+        model = UserProjectRole
+        fields = ['job_title', 'job_title_name', 'hourly_rate']
+
 class AddProjectRoleSerializer(serializers.Serializer):
     project = serializers.UUIDField()
     job_title_name = serializers.CharField(max_length=200)

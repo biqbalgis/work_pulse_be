@@ -79,6 +79,11 @@ class JobTitleViewSet(viewsets.ModelViewSet):
     serializer_class = JobTitleSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def paginate_queryset(self, queryset):
+        if self.request.query_params.get('pagination') == 'false':
+            return None
+        return super().paginate_queryset(queryset)
+
     def perform_create(self, serializer):
         instance = serializer.save()
         log_activity(self.request.user, "CREATE", "JobTitle", instance.id, request=self.request)
@@ -243,3 +248,22 @@ class UserProjectRoleViewSet(viewsets.ModelViewSet):
         instance.delete()
 
 
+
+from rest_framework.views import APIView
+
+class CurrentUserProjectRolesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        project_id = request.query_params.get("project_id")
+        if not project_id:
+            return Response({"error": "project_id query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        roles = UserProjectRole.objects.filter(
+            user=request.user, 
+            project_id=project_id,
+            is_deleted=False
+        ).select_related("job_title")
+
+        serializer = CurrentUserRoleSerializer(roles, many=True)
+        return Response(serializer.data)
