@@ -136,6 +136,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://64.23.184.224:5173",
     "http://64.23.184.224:3000",
     "http://64.23.184.224:8000",
+    "https://admin.workpulse.ca",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
