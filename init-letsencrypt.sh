@@ -7,13 +7,22 @@ fi
 
 # Load domain from .env
 if [ -f .env ]; then
+  # Convert .env to unix line endings just in case
+  sed -i 's/\r$//' .env
   export $(grep -v '^#' .env | xargs)
+fi
+
+# Ensure Nginx template has Unix line endings (critical for path parsing)
+if [ -f nginx/templates/default.conf.template ]; then
+  sed -i 's/\r$//' nginx/templates/default.conf.template
 fi
 
 if [ -z "$domain" ]; then
     echo "Error: 'domain' variable not found in .env file."
     exit 1
 fi
+
+echo "### Domain loaded: $domain"
 
 domains=($domain)
 rsa_key_size=4096
@@ -22,6 +31,9 @@ email="" # Adding a valid address is strongly recommended
 staging=0 # Set to 1 if you're testing your setup to avoid hitting request limits
 
 if [ -d "$data_path" ]; then
+  echo "### Existing data found. Correcting permissions..."
+  chmod -R 755 "$data_path"
+
   read -p "Existing data found for $domains. Continue and replace existing certificate? (y/N) " decision
   if [ "$decision" != "Y" ] && [ "$decision" != "y" ]; then
     exit
