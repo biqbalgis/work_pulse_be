@@ -139,6 +139,14 @@ CORS_ALLOWED_ORIGINS = [
     "https://admin.workpulse.ca",
 ]
 
+# Security settings for HTTPS
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+domain = config('domain', default=None)
+if domain:
+    CSRF_TRUSTED_ORIGINS = [f'https://{domain}']
+else:
+    CSRF_TRUSTED_ORIGINS = ["https://admin.workpulse.ca"]
+
 CORS_ALLOW_CREDENTIALS = True
 
 USE_X_FORWARDED_HOST = True
