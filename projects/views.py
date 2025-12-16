@@ -4,8 +4,14 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 
 from .models import Project, ProjectRole, UserProjectRole, JobTitle
-from .serializers import ProjectSerializer, ProjectRoleSerializer, UserProjectRoleSerializer, JobTitleSerializer, \
-    AddProjectRoleSerializer, CurrentUserRoleSerializer
+from .serializers import (
+    ProjectSerializer,
+    ProjectRoleSerializer,
+    UserProjectRoleSerializer,
+    JobTitleSerializer,
+    AddProjectRoleSerializer,
+    CurrentUserRoleSerializer,
+)
 from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser, IsWorkspaceAdminOrSuperUser
