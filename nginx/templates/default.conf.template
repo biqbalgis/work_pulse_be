@@ -3,7 +3,7 @@ upstream work_pulse_be {
 }
 
 server {
-    listen 80;
+    listen 80 default_server;
     server_name ${domain};
 
     location /.well-known/acme-challenge/ {

@@ -64,6 +64,21 @@ echo "### Starting nginx ..."
 docker compose -f docker-compose.prod.yml up --force-recreate -d nginx
 echo
 
+echo "### Verifying Nginx setup ..."
+mkdir -p "$data_path/www/.well-known/acme-challenge"
+echo "success" > "$data_path/www/.well-known/acme-challenge/test.html"
+echo "----------------------------------------------------------------"
+echo "Please visit http://$domain/.well-known/acme-challenge/test.html"
+echo "You should see the word 'success'."
+echo "If you get a 404, Nginx configuration or permissions are wrong."
+echo "If you get a connection error, port 80 might be blocked or not forwarded."
+echo "----------------------------------------------------------------"
+read -p "Did the test work? (y/N) " test_decision
+if [ "$test_decision" != "Y" ] && [ "$test_decision" != "y" ]; then
+  echo "Aborting. Please fix Nginx configuration."
+  exit 1
+fi
+
 echo "### Deleting dummy certificate for $domains ..."
 docker compose -f docker-compose.prod.yml run --rm --entrypoint "\
   rm -Rf /etc/letsencrypt/live/$domains && \
