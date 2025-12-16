@@ -11,3 +11,6 @@
 /.venv/
 /reports/migrations/
 /organization_asset/migrations/
+/static/
+/staticfiles/
+/static/

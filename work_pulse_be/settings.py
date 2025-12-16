@@ -124,6 +124,7 @@ SIMPLE_JWT = {
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8000",
@@ -132,15 +133,22 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",  # Vite default port
     "http://127.0.0.1:5173",
-    "http://104.248.211.192:5173",
-    "http://104.248.211.192:3000",
-    "http://104.248.211.192:8000",
+    "http://64.23.184.224:5173",
+    "http://64.23.184.224:3000",
+    "http://64.23.184.224:8000",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
 
 USE_X_FORWARDED_HOST = True
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+CORS_ALLOW_HEADERS = [  # Set the headers allowed in the requests
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'Cache-Control',
+    'Last-Event-ID'
+]
 
 
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
