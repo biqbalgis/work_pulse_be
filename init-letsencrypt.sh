@@ -15,7 +15,7 @@ if [ -z "$domain" ]; then
     exit 1
 fi
 
-domains=($domain www.$domain)
+domains=($domain)
 rsa_key_size=4096
 data_path="./data/certbot"
 email="" # Adding a valid address is strongly recommended

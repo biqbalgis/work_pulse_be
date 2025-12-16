@@ -4,7 +4,7 @@ upstream work_pulse_be {
 
 server {
     listen 80;
-    server_name ${domain} www.${domain};
+    server_name ${domain};
 
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
@@ -17,7 +17,7 @@ server {
 
 server {
     listen 443 ssl;
-    server_name ${domain} www.${domain};
+    server_name ${domain};
 
     ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
