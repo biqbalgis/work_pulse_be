@@ -137,6 +137,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://64.23.184.224:3000",
     "http://64.23.184.224:8000",
     "https://admin.workpulse.ca",
+    "https://www.workpulse.ca",
+    "https://workpulse.ca",
 ]
 
 # Security settings for HTTPS
