@@ -28,7 +28,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         if user.is_superuser:
-            return TimeEntry.objects.filter(is_deleted=False)
+            return TimeEntry.objects.filter(is_deleted=False,user=user)
 
         workspace_ids = WorkspaceMember.objects.filter(
             user=user
@@ -36,7 +36,8 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
         return TimeEntry.objects.filter(
             workspace_id__in=workspace_ids,
-            is_deleted=False
+            is_deleted=False,
+            user = user
         )
 
     # -----------------------------------------------------
