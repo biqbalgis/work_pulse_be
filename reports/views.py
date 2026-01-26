@@ -15,6 +15,7 @@ from time_entries.models import TimeEntry
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceManager, IsSuperUser, IsWorkspaceUser
 from organization_asset.models import AssetUsage
+from .models import LEMReport
 
 
 # Create your views here.
@@ -680,3 +681,123 @@ class DailyWorkReportView(APIView):
         lem_report.save()
 
         return Response(response_data, status=status.HTTP_200_OK)
+
+
+class LEMReportGenerationView(APIView):
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def post(self, request):
+        from_date_str = request.data.get("from")
+        to_date_str = request.data.get("to")
+        project_id = request.data.get("project_id")
+
+        if not from_date_str or not to_date_str:
+            return Response({"error": "from and to dates are required"}, status=400)
+        
+        if not project_id:
+             return Response({"error": "project_id is required"}, status=400)
+
+        try:
+            start_date = datetime.strptime(from_date_str, "%Y-%m-%d").date()
+            end_date = datetime.strptime(to_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+
+        try:
+            project = Project.objects.get(id=project_id)
+        except Project.DoesNotExist:
+             return Response({"error": "Project not found"}, status=404)
+
+        lem_report = LEMReport.objects.create(
+            requester=request.user,
+            project=project
+        )
+
+        daily_reports = []
+        current_date = start_date
+        
+        all_time_entries = TimeEntry.objects.filter(
+            project_id=project_id,
+            start_time__date__range=[start_date, end_date]
+        ).select_related('user', 'job_title').prefetch_related('asset_usages__asset')
+
+        entries_by_date = {}
+        for entry in all_time_entries:
+            d = entry.start_time.date()
+            if d not in entries_by_date:
+                entries_by_date[d] = []
+            entries_by_date[d].append(entry)
+
+        while current_date <= end_date:
+            day_entries = entries_by_date.get(current_date, [])
+            
+            user_entries = {}
+            for entry in day_entries:
+                if entry.user_id not in user_entries:
+                    user_entries[entry.user_id] = {
+                        "user": entry.user,
+                        "total_minutes": 0
+                    }
+                user_entries[entry.user_id]["total_minutes"] += entry.duration
+
+            employees_data = []
+            for user_id, data in user_entries.items():
+                total_hours = data["total_minutes"] / 60.0
+                rt_hours = min(total_hours, 8.0)
+                ot_hours = max(total_hours - 8.0, 0.0)
+                
+                employees_data.append({
+                    "id": user_id,
+                    "name": f"{data['user'].first_name} {data['user'].last_name}",
+                    "total_hours": round(total_hours, 2),
+                    "regular_hours": round(rt_hours, 2),
+                    "overtime_hours": round(ot_hours, 2)
+                })
+
+            assets_map = {}
+            for entry in day_entries:
+                for usage in entry.asset_usages.all():
+                    asset = usage.asset
+                    if asset.id not in assets_map:
+                        assets_map[asset.id] = {
+                            "id": str(asset.id),
+                            "name": asset.name,
+                            "usage": 0.0,
+                            "unit": "hours" if asset.charge_type == 'hourly' else "quantity"
+                        }
+                    
+                    if asset.charge_type == 'hourly':
+                        assets_map[asset.id]["usage"] += (entry.duration / 60.0)
+                    else:
+                        assets_map[asset.id]["usage"] += float(usage.quantity_used or 0)
+
+            assets_data = []
+            for asset_vals in assets_map.values():
+                assets_data.append({
+                    "id": asset_vals["id"],
+                    "name": asset_vals["name"],
+                    "usage": round(asset_vals["usage"], 2),
+                    "unit": asset_vals["unit"]
+                })
+
+            daily_reports.append({
+                "date": str(current_date),
+                "employees": employees_data,
+                "assets": assets_data
+            })
+            
+            current_date += timedelta(days=1)
+
+        result = {
+            "lem_number": lem_report.lem_number,
+            "project_id": project_id,
+            "project_name": project.name,
+            "from_date": from_date_str,
+            "to_date": to_date_str,
+            "daily_reports": daily_reports
+        }
+        
+        lem_report.report_data = result
+        lem_report.save()
+
+        return Response(result, status=status.HTTP_201_CREATED)
