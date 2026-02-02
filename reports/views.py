@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta
 
+from django.http import FileResponse
 from django.shortcuts import render
 from rest_framework import status
+from rest_framework.generics import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,9 +18,100 @@ from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceManager, IsSuperUser, IsWorkspaceUser
 from organization_asset.models import AssetUsage
 from .models import LEMReport
-
+import io
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Spacer, Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
 
 # Create your views here.
+def generate_lem_pdf(report):
+    buffer = io.BytesIO()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(letter),
+        leftMargin=30,
+        rightMargin=30,
+        topMargin=30,
+        bottomMargin=30
+    )
+
+    styles = getSampleStyleSheet()
+    elements = []
+
+    # -------------------------
+    # HEADER
+    # -------------------------
+    title = Paragraph(
+        f"<b>LEM Report — {report['lem_number']}</b>",
+        styles["Heading1"]
+    )
+    elements.append(title)
+    elements.append(Spacer(1, 20))
+
+    header_data = [
+        ["Project:", report["project_name"]],
+        ["Reporting Period:", f"{report['from_date']} → {report['to_date']}"],
+        ["Requester:", report.get("requester", "")]
+    ]
+
+    header_table = Table(header_data, colWidths=[150, 500])
+
+    header_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 1, colors.black),
+        ("PADDING", (0, 0), (-1, -1), 6)
+    ]))
+
+    elements.append(header_table)
+    elements.append(Spacer(1, 30))
+
+    # -------------------------
+    # DAILY TABLES
+    # -------------------------
+    for day, day_data in report["report_data"].items():
+
+        # day title
+        elements.append(Paragraph(f"<b>Date: {day}</b>", styles["Heading2"]))
+        elements.append(Spacer(1, 10))
+
+        table_data = [
+            ["Name", "Role", "Hours", "Supplies", "Equipment"]
+        ]
+
+        for entry in day_data["time_entries"]:
+            table_data.append([
+                entry["name"],
+                entry["role"],
+                entry["hours"],
+                entry["supplies"],
+                entry["equip"]
+            ])
+
+        # add blank rows like your sheet
+        for _ in range(8):
+            table_data.append(["", "", "", "", ""])
+
+        crew_table = Table(
+            table_data,
+            colWidths=[220, 150, 100, 100, 150]
+        )
+
+        crew_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 1, colors.black),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (2, 1), (-1, -1), "CENTER"),
+            ("ROWHEIGHT", (0, 0), (-1, -1), 25),
+        ]))
+
+        elements.append(crew_table)
+        elements.append(Spacer(1, 40))
+
+    doc.build(elements)
+
+    buffer.seek(0)
+    return buffer
 
 class WeeklyPayrollReport(APIView):
     permission_classes = [IsAuthenticated,IsWorkspaceManager | IsSuperUser]
@@ -158,6 +251,7 @@ class DailyDetailView(APIView):
 
         # Parse date
         date = datetime.strptime(date, "%Y-%m-%d").date()
+
 
         # Fetch ALL entries for that date
         entries = list(TimeEntry.objects.filter(
@@ -301,7 +395,6 @@ class DailyWorkReportView(APIView):
         except ValueError:
             return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
 
-        # Base filter
         filters = {"start_time__date": date}
         if workspace_id:
             filters["workspace_id"] = workspace_id
@@ -800,4 +893,84 @@ class LEMReportGenerationView(APIView):
         lem_report.report_data = result
         lem_report.save()
 
+        # pdf_buffer = generate_lem_pdf(result)
+
         return Response(result, status=status.HTTP_201_CREATED)
+        # return FileResponse(
+        #     pdf_buffer,
+        #     as_attachment=True,
+        #     filename=f"{lem_report.lem_number}.pdf",
+        #     content_type="application/pdf"
+        # )
+
+
+from .pdf_utils import generate_daily_lem_pdf
+from django.http import FileResponse
+
+class LEMDailyReportView(APIView):
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def post(self, request):
+        date_str = request.data.get("date")
+        project_id = request.data.get("project_id")
+
+        if not date_str or not project_id:
+            return Response(
+                {"error": "date and project_id required"},
+                status=400
+            )
+
+        try:
+            report_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"error": "Invalid date"}, status=400)
+
+        project = get_object_or_404(Project, id=project_id)
+
+        entries = (
+            TimeEntry.objects
+            .filter(
+                project_id=project_id,
+                start_time__date=report_date
+            )
+            .select_related("user", "job_title")
+            .prefetch_related("asset_usages__asset")
+        )
+
+        rows = []
+
+        for entry in entries:
+            start = entry.start_time.strftime("%H:%M")
+            end = entry.end_time.strftime("%H:%M") if entry.end_time else ""
+
+            extras = []
+
+            for usage in entry.asset_usages.all():
+                extras.append(usage.asset.name)
+
+            rows.append({
+                "name": f"{entry.user.first_name} {entry.user.last_name}",
+                "role": entry.job_title.name if entry.job_title else "",
+                "start": start,
+                "end": end,
+                "hours": round(entry.duration / 60, 2),
+                "extras": ", ".join(extras)
+            })
+
+        result = {
+            "project_name": project.name,
+            "date": date_str,
+            "steward": request.user.get_full_name(),
+            "rows": rows
+        }
+
+        if request.data.get("generate_pdf"):
+            pdf_buffer = generate_daily_lem_pdf(result)
+            return FileResponse(
+                pdf_buffer,
+                as_attachment=True,
+                filename=f"Daily_LEM_{date_str}.pdf",
+                content_type="application/pdf"
+            )
+
+        return Response(result)
