@@ -39,3 +39,16 @@ class TimeEntrySerializer(serializers.ModelSerializer):
             "id","user","workspace","duration","hourly_rate","cost",
             "created_at","created_by","assets"
         ]
+
+class BulkTimeEntryInputSerializer(serializers.Serializer):
+    date = serializers.DateField(format="%Y-%m-%d")
+    user = serializers.UUIDField()
+    project = serializers.UUIDField()
+    job_title = serializers.UUIDField()
+    task = serializers.UUIDField(required=False, allow_null=True)
+    start_time = serializers.TimeField(format="%H:%M")
+    end_time = serializers.TimeField(format="%H:%M")
+    description = serializers.CharField(required=False, allow_blank=True)
+    billable = serializers.BooleanField(default=False)
+    meals = serializers.BooleanField(default=False)
+    hotels = serializers.BooleanField(default=False)
