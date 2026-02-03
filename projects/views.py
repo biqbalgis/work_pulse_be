@@ -236,7 +236,12 @@ class UserProjectRoleViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         workspace = get_user_workspace(self.request)
-        return UserProjectRole.objects.filter(project__workspace=workspace, is_deleted=False)
+        return (
+            UserProjectRole.objects
+            .select_related('user', 'project', 'job_title')
+            .filter(project__workspace=workspace, is_deleted=False)
+            .order_by('user__first_name')  # or whatever you prefer
+        )
 
     def perform_create(self, serializer):
         user = serializer.validated_data.get("user")

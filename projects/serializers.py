@@ -42,9 +42,12 @@ class ProjectRoleSerializer(serializers.ModelSerializer):
 
 
 class UserProjectRoleSerializer(serializers.ModelSerializer):
+    user_full_name = serializers.CharField(source="user.get_full_name", read_only=True)
+    project_name = serializers.CharField(source="project.name", read_only=True)
+    job_title_name = serializers.CharField(source="job_title.name", read_only=True)
     class Meta:
         model = UserProjectRole
-        fields = ['id', 'user', 'project', 'job_title', 'hourly_rate']
+        fields = ['id', 'user', 'project', 'job_title', 'hourly_rate','user_full_name','project_name','job_title_name']
 
 
 
