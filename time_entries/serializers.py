@@ -40,7 +40,7 @@ class TimeEntrySerializer(serializers.ModelSerializer):
             "created_at","created_by","assets"
         ]
 
-class BulkTimeEntryInputSerializer(serializers.Serializer):
+class BulkTimeEntrySerializer(serializers.Serializer):
     date = serializers.DateField(format="%Y-%m-%d")
     user = serializers.UUIDField()
     project = serializers.UUIDField()

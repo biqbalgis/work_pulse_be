@@ -279,8 +279,7 @@ class CurrentUserProjectRolesView(APIView):
         roles = UserProjectRole.objects.filter(
             user=request.user, 
             project_id=project_id,
-            is_deleted=False
-        ).select_related("job_title")
+            is_deleted=False).select_related("job_title")
 
         serializer = CurrentUserRoleSerializer(roles, many=True)
         return Response(serializer.data)
