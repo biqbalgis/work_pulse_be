@@ -233,6 +233,7 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
 class UserProjectRoleViewSet(viewsets.ModelViewSet):
     serializer_class = UserProjectRoleSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = None
 
     def get_queryset(self):
         workspace = get_user_workspace(self.request)
