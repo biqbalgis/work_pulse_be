@@ -958,12 +958,22 @@ class LEMDailyReportView(APIView):
                 "extras": ", ".join(extras)
             })
 
+        # Create LEM Report to auto-generate sequential number
+        lem_report = LEMReport.objects.create(
+            requester=request.user,
+            project=project
+        )
+
         result = {
             "project_name": project.name,
             "date": date_str,
             "steward": request.user.get_full_name(),
+            "lem_number": lem_report.lem_number,
             "rows": rows
         }
+
+        lem_report.report_data = result
+        lem_report.save()
 
         if request.data.get("generate_pdf"):
             pdf_buffer = generate_daily_lem_pdf(result)
