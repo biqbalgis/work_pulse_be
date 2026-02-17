@@ -1,3 +1,4 @@
+
 from django.db import models
 from core.models import SoftDeleteModel
 from users.models import User
@@ -15,8 +16,6 @@ class Workspace(SoftDeleteModel):
 
     def __str__(self):
         return self.name
-
-from core.models import SoftDeleteModel
 
 class WorkspaceMember(SoftDeleteModel):
     ROLE_CHOICES = (
@@ -39,3 +38,16 @@ class WorkspaceMember(SoftDeleteModel):
 
     def __str__(self):
         return f"{self.user} - {self.workspace}"
+
+class Holiday(SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='holidays', null=True, blank=True)
+    name = models.CharField(max_length=255)
+    date = models.DateField()
+    
+    class Meta:
+        ordering = ['date']
+        unique_together = ('workspace', 'date')
+
+    def __str__(self):
+        return f"{self.name} ({self.date})"

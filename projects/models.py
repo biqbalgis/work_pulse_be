@@ -1,3 +1,4 @@
+
 from django.db import models
 from core.models import SoftDeleteModel
 from workspaces.models import Workspace
@@ -55,3 +56,28 @@ class UserProjectRole(SoftDeleteModel):
     def __str__(self):
         return f"{self.user.email} → {self.job_title.name} @ {self.project.name}"
 
+
+class LaborRate(SoftDeleteModel):
+    ROLE_CONDITIONS = [
+        ('Day', 'Day'),
+        ('Night', 'Night'),
+        ('Saturday', 'Saturday'),
+        ('Saturday Night', 'Saturday Night'),
+        ('Sunday Day', 'Sunday Day'),
+        ('Sunday Night', 'Sunday Night'),
+        ('Holiday', 'Holiday'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    job_title = models.ForeignKey(JobTitle, on_delete=models.CASCADE, related_name='labor_rates')
+    condition = models.CharField(max_length=50, choices=ROLE_CONDITIONS)
+    
+    regular_cost = models.DecimalField(max_digits=10, decimal_places=2)
+    overtime_cost = models.DecimalField(max_digits=10, decimal_places=2)
+    double_time_cost = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        unique_together = ('job_title', 'condition')
+
+    def __str__(self):
+        return f"{self.job_title.name} - {self.condition}"

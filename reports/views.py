@@ -14,6 +14,7 @@ from approvals.models import TimeEntryApprovalItem
 from approvals.utils import calculate_rt_ot_and_cost
 from projects.models import Project
 from time_entries.models import TimeEntry
+from users.models import User
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceManager, IsSuperUser, IsWorkspaceUser
 from organization_asset.models import AssetUsage
@@ -974,3 +975,105 @@ class LEMDailyReportView(APIView):
             )
 
         return Response(result)
+
+
+from .cost_calculator import CostCalculator
+from .pdf_utils import generate_costing_lem_pdf
+
+class LEMCostingReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        date_str = request.data.get("date")
+        project_id = request.data.get("project_id")
+
+        if not date_str or not project_id:
+            return Response(
+                {"error": "date and project_id required"},
+                status=400
+            )
+
+        try:
+            report_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"error": "Invalid date"}, status=400)
+
+        project = get_object_or_404(Project, id=project_id)
+
+        # 1. Identify Users working on this Project on this Date
+        daily_entries = TimeEntry.objects.filter(
+            project_id=project_id,
+            start_time__date=report_date
+        ).select_related("user", "job_title")
+
+        user_ids_on_day = daily_entries.values_list("user_id", flat=True).distinct()
+        
+        report_rows = []
+        
+        # Calculate Week Start (Monday)
+        weekday_idx = report_date.weekday() # 0=Mon, 6=Sun
+        days_since_monday = weekday_idx
+        monday_date = report_date - timedelta(days=days_since_monday)
+        
+        # Fetch M-F entries for relevant users (Global)
+        week_entries_qs = TimeEntry.objects.filter(
+            user_id__in=user_ids_on_day,
+            start_time__date__range=[monday_date, monday_date + timedelta(days=4)], # Mon-Fri
+        )
+        
+        user_weekly_hours = {}
+        for e in week_entries_qs:
+            dur = e.duration / 60.0
+            user_weekly_hours[e.user_id] = user_weekly_hours.get(e.user_id, 0.0) + dur
+            
+        # 2. Iterate Users
+        users = User.objects.filter(id__in=user_ids_on_day)
+        
+        for user in users:
+            calculator = CostCalculator(user, report_date, project)
+            
+            # Fetch generic daily entries for THIS project to calculate its specific costs
+            this_project_entries = [e for e in daily_entries if e.user_id == user.id]
+            
+            weekly_sum = user_weekly_hours.get(user.id, 0.0)
+            
+            cost_map = calculator.calculate_daily_cost_for_user(this_project_entries, weekly_sum)
+            
+            for jt_name, data in cost_map.items():
+                report_rows.append({
+                    "employee_name": f"{user.first_name} {user.last_name}",
+                    "job_title": jt_name,
+                    "regular_hours": float(data["reg"]),
+                    "overtime_hours": float(data["ot"]),
+                    "double_time_hours": float(data["dt"]),
+                    "per_hour_cost": float(data["base_rate"]),
+                    "total_cost": float(data["cost"])
+                })
+
+        # Create LEM Report to auto-generate sequential number
+        lem_report = LEMReport.objects.create(
+            requester=request.user,
+            project=project
+        )
+
+        # Prepare Result
+        result = {
+            "project_name": project.name,
+            "date": date_str,
+            "lem_number": lem_report.lem_number,
+            "rows": report_rows
+        }
+        
+        # Save report data
+        lem_report.report_data = result
+        lem_report.save()
+
+        # Generate PDF
+        pdf_buffer = generate_costing_lem_pdf(result)
+
+        return FileResponse(
+            pdf_buffer,
+            as_attachment=True,
+            filename=f"Daily_LEM_Costing_{date_str}.pdf",
+            content_type="application/pdf"
+        )
