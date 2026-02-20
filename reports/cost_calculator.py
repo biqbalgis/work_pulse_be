@@ -208,6 +208,9 @@ class CostCalculator:
             if jt_name not in job_title_breakdowns:
                 job_title_breakdowns[jt_name] = {
                     "reg": 0.0, "ot": 0.0, "dt": 0.0, "cost": Decimal(0.0), 
+                    "reg_rate": float(rate_obj.regular_cost),
+                    "ot_rate": float(rate_obj.overtime_cost),
+                    "dt_rate": float(rate_obj.double_time_cost),
                     "base_rate": rate_obj.regular_cost # Representative rate
                 }
             

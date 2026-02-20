@@ -66,7 +66,7 @@ def generate_daily_lem_pdf(data):
         ]
         
         col3_content = [
-            Paragraph(f"<b>LEM #:</b> {lem_number}", styles["Normal"]),
+            Paragraph(f"<font size=14><b>LEM #:</b> {lem_number}</font>", styles["Normal"]),
         ]
         
         header_data = [[col1_content, col2_content, col3_content]]
@@ -261,8 +261,8 @@ def generate_costing_lem_pdf(data):
     # -------------------------
     elements = []
     
-    # Columns: Employee Name, Job Title, Regular Hours, Over Time, Double Time, Total Cost
-    table_headers = ["Employee Name", "Job Title", "Reg", "OT", "DT", "Total Cost"]
+    # Columns: Employee Name, Job Title, Regular Hours/Rate, Over Time Hours/Rate, Double Time Hours/Rate, Total Cost
+    table_headers = ["Employee Name", "Job Title", "Reg Hrs", "Reg Rate", "OT Hrs", "OT Rate", "DT Hrs", "DT Rate", "Total Cost"]
     table_data = [table_headers]
     
     rows = data.get("rows", [])
@@ -276,22 +276,27 @@ def generate_costing_lem_pdf(data):
             row.get("employee_name", ""),
             row.get("job_title", ""),
             str(row.get("regular_hours", 0)),
+            f"${row.get('regular_rate', 0)}",
             str(row.get("overtime_hours", 0)),
+            f"${row.get('overtime_rate', 0)}",
             str(row.get("double_time_hours", 0)),
+            f"${row.get('double_time_rate', 0)}",
             f"${c}"
         ])
 
     if not rows:
-        table_data.append(["No entries found", "", "", "", "", ""])
+        table_data.append(["No entries found", "", "", "", "", "", "", "", ""])
 
-    # Add Total Row
-    table_data.append(["", "", "", "", 
-                      Paragraph("<b>TOTAL</b>", styles["Normal"]), 
-                      Paragraph(f"<b>${round(total_cost_sum, 2)}</b>", styles["Normal"])])
+    # Add Total Row (Spanning 8 columns for "TOTAL")
+    table_data.append([
+        Paragraph("<b>TOTAL</b>", styles["Normal"]), 
+        "", "", "", "", "", "", "", 
+        Paragraph(f"<b>${round(total_cost_sum, 2)}</b>", styles["Normal"])
+    ])
 
     # Columns widths for A4 Landscape (Printable ~782)
-    # Equal spacing for all 6 columns: 782 / 6 = ~130 per column
-    col_widths = [130, 130, 130, 130, 130, 132]  # Total = 782
+    # Employee(120), Title(100), 6 columns for Hrs/Rate (60/65 each), Total Cost(187)
+    col_widths = [120, 100, 60, 65, 60, 65, 60, 65, 187] 
 
     main_table = Table(table_data, colWidths=col_widths, repeatRows=1) 
     
@@ -301,7 +306,7 @@ def generate_costing_lem_pdf(data):
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),  # Center headers
         ('ALIGN', (0, 1), (-1, -1), 'LEFT'),   # Left align values
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
         ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
         ('BACKGROUND', (0, 1), (-1, -1), colors.white),
         ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -310,6 +315,13 @@ def generate_costing_lem_pdf(data):
         ('BOTTOMPADDING', (0, 1), (-1, -1), 4),
         # Bold Total Row
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        # Center align the numeric columns (indices 2 to 7)
+        ('ALIGN', (2, 0), (7, -1), 'CENTER'),
+        # Span columns for TOTAL label and center it
+        ('SPAN', (0, -1), (7, -1)),
+        ('ALIGN', (0, -1), (7, -1), 'CENTER'),
+        # Center the total cost value
+        ('ALIGN', (8, -1), (8, -1), 'CENTER'),
     ]
 
     main_table.setStyle(TableStyle(table_style))

@@ -967,7 +967,6 @@ class LEMDailyReportView(APIView):
         result = {
             "project_name": project.name,
             "date": date_str,
-            "steward": request.user.get_full_name(),
             "lem_number": lem_report.lem_number,
             "rows": rows
         }
@@ -1054,8 +1053,11 @@ class LEMCostingReportView(APIView):
                     "employee_name": f"{user.first_name} {user.last_name}",
                     "job_title": jt_name,
                     "regular_hours": float(data["reg"]),
+                    "regular_rate": float(data.get("reg_rate", 0)),
                     "overtime_hours": float(data["ot"]),
+                    "overtime_rate": float(data.get("ot_rate", 0)),
                     "double_time_hours": float(data["dt"]),
+                    "double_time_rate": float(data.get("dt_rate", 0)),
                     "per_hour_cost": float(data["base_rate"]),
                     "total_cost": float(data["cost"])
                 })
