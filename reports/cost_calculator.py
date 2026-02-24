@@ -263,7 +263,7 @@ class CostCalculator:
         
         start_t = entry.start_time.astimezone(timezone.get_current_timezone()).time()
         night_start = time(18, 0)
-        morning_start = time(5, 50)
+        morning_start = time(5, 00)
         
         is_night = (start_t >= night_start) or (start_t < morning_start)
         
