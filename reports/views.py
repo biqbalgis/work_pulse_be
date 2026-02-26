@@ -914,7 +914,7 @@ class LEMDailyReportView(APIView):
     def post(self, request):
         date_str = request.data.get("date")
         project_id = request.data.get("project_id")
-
+        sign = request.data.get("sign",None)
         if not date_str or not project_id:
             return Response(
                 {"error": "date and project_id required"},
@@ -968,6 +968,7 @@ class LEMDailyReportView(APIView):
             "project_name": project.name,
             "date": date_str,
             "lem_number": lem_report.lem_number,
+            "sign": sign,
             "rows": rows
         }
 
@@ -995,7 +996,7 @@ class LEMCostingReportView(APIView):
     def post(self, request):
         date_str = request.data.get("date")
         project_id = request.data.get("project_id")
-
+        sign = request.data.get("sign", None)
         if not date_str or not project_id:
             return Response(
                 {"error": "date and project_id required"},
@@ -1073,6 +1074,7 @@ class LEMCostingReportView(APIView):
             "project_name": project.name,
             "date": date_str,
             "lem_number": lem_report.lem_number,
+            "sign": sign,
             "rows": report_rows
         }
         
