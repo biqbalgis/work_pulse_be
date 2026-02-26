@@ -4,6 +4,8 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Spacer, Par
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 import io
+import base64
+from reportlab.lib.utils import ImageReader
 
 def generate_daily_lem_pdf(data):
     # Prepare Buffer
@@ -34,6 +36,16 @@ def generate_daily_lem_pdf(data):
     date_str = data.get("date", "")
     lem_number = data.get("lem_number", "")
     logo_path = os.path.join("reports", "static", "reports", "images", "logo.png")
+
+    sign_data = data.get("sign", None)
+    sign_image = None
+    if sign_data and sign_data.startswith("data:image"):
+        try:
+            head, base64_str = sign_data.split(",", 1)
+            image_bytes = base64.b64decode(base64_str)
+            sign_image = ImageReader(io.BytesIO(image_bytes))
+        except Exception:
+            pass
 
     def draw_header_footer(canvas, doc):
         canvas.saveState()
@@ -95,6 +107,10 @@ def generate_daily_lem_pdf(data):
         line_start_x = doc.leftMargin
         line_end_x = doc.leftMargin + 250  # 250 points wide line
         line_y = 50
+        
+        if sign_image:
+            canvas.drawImage(sign_image, line_start_x, line_y + 2, width=250, height=40, preserveAspectRatio=True, anchor='sw', mask='auto')
+            
         canvas.line(line_start_x, line_y, line_end_x, line_y)
         
         # Draw "Name & Signature" label below the line
@@ -190,6 +206,16 @@ def generate_costing_lem_pdf(data):
     lem_number = data.get("lem_number", "")
     logo_path = os.path.join("reports", "static", "reports", "images", "logo.png")
 
+    sign_data = data.get("sign", None)
+    sign_image = None
+    if sign_data and sign_data.startswith("data:image"):
+        try:
+            head, base64_str = sign_data.split(",", 1)
+            image_bytes = base64.b64decode(base64_str)
+            sign_image = ImageReader(io.BytesIO(image_bytes))
+        except Exception:
+            pass
+
     def draw_heading_footer(canvas, doc):
         canvas.saveState()
         
@@ -243,6 +269,10 @@ def generate_costing_lem_pdf(data):
         line_start_x = doc.leftMargin
         line_end_x = doc.leftMargin + 250  # 250 points wide line
         line_y = 50
+        
+        if sign_image:
+            canvas.drawImage(sign_image, line_start_x, line_y + 2, width=250, height=40, preserveAspectRatio=True, anchor='sw', mask='auto')
+            
         canvas.line(line_start_x, line_y, line_end_x, line_y)
         
         # Draw "Name & Signature" label below the line
