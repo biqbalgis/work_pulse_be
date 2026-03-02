@@ -80,7 +80,7 @@ class IsWorkspaceUser(permissions.BasePermission):
             return False
 
         return WorkspaceMember.objects.filter(
-            user=user, workspace=workspace, role__in=['user', 'manager', 'admin']
+            user=user, workspace=workspace, role__in=['user', 'manager', 'admin', 'field_manager']
         ).exists()
 
 class IsWorkspaceAdminOrSuperUser(BasePermission):

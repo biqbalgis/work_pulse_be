@@ -80,7 +80,7 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
 class RegisterSerializer(serializers.ModelSerializer):
     workspace_id = serializers.UUIDField(required=False, allow_null=True)
     role = serializers.ChoiceField(
-        choices=[('admin', 'Admin'), ('manager', 'Manager'), ('user', 'User')],
+        choices=[('admin', 'Admin'), ('manager', 'Manager'), ('user', 'User'),('field_manager','Field Manager')],
         default='user'
     )
 

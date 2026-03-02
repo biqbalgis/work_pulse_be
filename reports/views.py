@@ -991,7 +991,7 @@ from .cost_calculator import CostCalculator
 from .pdf_utils import generate_costing_lem_pdf
 
 class LEMCostingReportView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsWorkspaceManager]
 
     def post(self, request):
         date_str = request.data.get("date")

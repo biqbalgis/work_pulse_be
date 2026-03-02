@@ -21,6 +21,7 @@ class WorkspaceMember(SoftDeleteModel):
     ROLE_CHOICES = (
         ('admin', 'Admin'),
         ('manager', 'Manager'),
+        ('field_manager', 'Field Manager'),
         ('user', 'User'),
     )
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
