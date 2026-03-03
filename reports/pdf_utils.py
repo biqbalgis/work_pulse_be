@@ -33,6 +33,7 @@ def generate_daily_lem_pdf(data):
     
     # 1. Prepare Header Content
     project_name = data.get("project_name", "")
+    client_name = data.get("client_name", "")
     date_str = data.get("date", "")
     lem_number = data.get("lem_number", "")
     logo_path = os.path.join("reports", "static", "reports", "images", "logo.png")
@@ -72,12 +73,16 @@ def generate_daily_lem_pdf(data):
             ]
         
         col2_content = [
-            Paragraph(f"<b>Project Name:</b> {project_name}", styles["Normal"]),
+            Paragraph(f"<b>Client Name:</b> {client_name}", styles["Normal"]),
             Spacer(1, 6),
-            Paragraph(f"<b>Reporting Date:</b> {date_str}", styles["Normal"]),
+            Paragraph(f"<b>Project Name:</b> {project_name}", styles["Normal"]),
+
+
         ]
         
         col3_content = [
+            Paragraph(f"<b>Reporting Date:</b> {date_str}", styles["Normal"]),
+            Spacer(1, 6),
             Paragraph(f"<font size=14><b>LEM #:</b> {lem_number}</font>", styles["Normal"]),
         ]
         
@@ -202,6 +207,7 @@ def generate_costing_lem_pdf(data):
     
     # 1. Prepare Header Content
     project_name = data.get("project_name", "")
+    client_name = data.get("client_name", "")
     date_str = data.get("date", "")
     lem_number = data.get("lem_number", "")
     logo_path = os.path.join("reports", "static", "reports", "images", "logo.png")
@@ -237,15 +243,18 @@ def generate_costing_lem_pdf(data):
                 Spacer(1, 6),
                 Paragraph("<b>TEMIXW</b>", styles["Normal"]),
             ]
-        
+
         col2_content = [
-            Paragraph(f"<b>Project Name:</b> {project_name}", styles["Normal"]),
+            Paragraph(f"<b>Client Name:</b> {client_name}", styles["Normal"]),
             Spacer(1, 6),
-            Paragraph(f"<b>Reporting Date:</b> {date_str}", styles["Normal"]),
+            Paragraph(f"<b>Project Name:</b> {project_name}", styles["Normal"]),
+
         ]
-        
+
         col3_content = [
-            Paragraph(f"<b>LEM #:</b> {lem_number}", styles["Normal"]),
+            Paragraph(f"<b>Reporting Date:</b> {date_str}", styles["Normal"]),
+            Spacer(1, 6),
+            Paragraph(f"<font size=14><b>LEM #:</b> {lem_number}</font>", styles["Normal"]),
         ]
         
         header_data = [[col1_content, col2_content, col3_content]]

@@ -966,6 +966,7 @@ class LEMDailyReportView(APIView):
 
         result = {
             "project_name": project.name,
+            "client_name": project.client.name if project.client else "",
             "date": date_str,
             "lem_number": lem_report.lem_number,
             "sign": sign,
@@ -1072,6 +1073,7 @@ class LEMCostingReportView(APIView):
         # Prepare Result
         result = {
             "project_name": project.name,
+            "client_name": project.client.name if project.client else "",
             "date": date_str,
             "lem_number": lem_report.lem_number,
             "sign": sign,
