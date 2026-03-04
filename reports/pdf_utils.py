@@ -36,6 +36,8 @@ def generate_daily_lem_pdf(data):
     client_name = data.get("client_name", "")
     date_str = data.get("date", "")
     lem_number = data.get("lem_number", "")
+    sign_name = data.get("sign_name", "")
+    sign_date = data.get("sign_date", "")
     logo_path = os.path.join("reports", "static", "reports", "images", "logo.png")
 
     sign_data = data.get("sign", None)
@@ -44,7 +46,8 @@ def generate_daily_lem_pdf(data):
         try:
             head, base64_str = sign_data.split(",", 1)
             image_bytes = base64.b64decode(base64_str)
-            sign_image = ImageReader(io.BytesIO(image_bytes))
+            sign_image = Image(io.BytesIO(image_bytes), width=200, height=35, kind='proportional')
+            sign_image.hAlign = "LEFT"
         except Exception:
             pass
 
@@ -108,19 +111,30 @@ def generate_daily_lem_pdf(data):
         header_table.drawOn(canvas, doc.leftMargin, doc.height + doc.topMargin - h - 15 - h_t)
         
         # --- Draw Footer (Signature Section) ---
-        # Draw signature line first
-        line_start_x = doc.leftMargin
-        line_end_x = doc.leftMargin + 250  # 250 points wide line
-        line_y = 50
+        signature_rows = [
+            [Paragraph("<b>Name:</b>", styles["Normal"]), Paragraph(sign_name, styles["Normal"])],
+            [Paragraph("<b>Signature:</b>", styles["Normal"]), sign_image if sign_image else Paragraph("", styles["Normal"])],
+            [Paragraph("<b>Date:</b>", styles["Normal"]), Paragraph(sign_date, styles["Normal"])],
+        ]
         
-        if sign_image:
-            canvas.drawImage(sign_image, line_start_x, line_y + 2, width=250, height=40, preserveAspectRatio=True, anchor='sw', mask='auto')
-            
-        canvas.line(line_start_x, line_y, line_end_x, line_y)
+        signature_table = Table(
+            signature_rows,
+            colWidths=[70, 220],
+            rowHeights=[16, 40, 16]
+        )
+
+        signature_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+            ('LINEBELOW', (1, 0), (1, 2), 0.8, colors.black),
+        ]))
         
-        # Draw "Name & Signature" label below the line
-        canvas.setFont("Helvetica", 10)
-        canvas.drawString(doc.leftMargin, 38, "Name & Signature")
+        w_sig, h_sig = signature_table.wrap(doc.width, doc.bottomMargin)
+        signature_table.drawOn(canvas, doc.leftMargin, 30)
         
         # Page number below signature
         page_num_text = f"Page {doc.page}"
@@ -210,6 +224,8 @@ def generate_costing_lem_pdf(data):
     client_name = data.get("client_name", "")
     date_str = data.get("date", "")
     lem_number = data.get("lem_number", "")
+    sign_name = data.get("sign_name", "")
+    sign_date = data.get("sign_date", "")
     logo_path = os.path.join("reports", "static", "reports", "images", "logo.png")
 
     sign_data = data.get("sign", None)
@@ -218,7 +234,8 @@ def generate_costing_lem_pdf(data):
         try:
             head, base64_str = sign_data.split(",", 1)
             image_bytes = base64.b64decode(base64_str)
-            sign_image = ImageReader(io.BytesIO(image_bytes))
+            sign_image = Image(io.BytesIO(image_bytes), width=200, height=35, kind='proportional')
+            sign_image.hAlign = "LEFT"
         except Exception:
             pass
 
@@ -274,19 +291,30 @@ def generate_costing_lem_pdf(data):
         header_table.drawOn(canvas, doc.leftMargin, doc.height + doc.topMargin - h - 15 - h_t)
         
         # --- Draw Footer (Signature Section) ---
-        # Draw signature line first
-        line_start_x = doc.leftMargin
-        line_end_x = doc.leftMargin + 250  # 250 points wide line
-        line_y = 50
+        signature_rows = [
+            [Paragraph("<b>Name:</b>", styles["Normal"]), Paragraph(sign_name, styles["Normal"])],
+            [Paragraph("<b>Signature:</b>", styles["Normal"]), sign_image if sign_image else Paragraph("", styles["Normal"])],
+            [Paragraph("<b>Date:</b>", styles["Normal"]), Paragraph(sign_date, styles["Normal"])],
+        ]
         
-        if sign_image:
-            canvas.drawImage(sign_image, line_start_x, line_y + 2, width=250, height=40, preserveAspectRatio=True, anchor='sw', mask='auto')
-            
-        canvas.line(line_start_x, line_y, line_end_x, line_y)
+        signature_table = Table(
+            signature_rows,
+            colWidths=[70, 220],
+            rowHeights=[16, 40, 16]
+        )
+
+        signature_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+            ('LINEBELOW', (1, 0), (1, 2), 0.8, colors.black),
+        ]))
         
-        # Draw "Name & Signature" label below the line
-        canvas.setFont("Helvetica", 10)
-        canvas.drawString(doc.leftMargin, 38, "Name & Signature")
+        w_sig, h_sig = signature_table.wrap(doc.width, doc.bottomMargin)
+        signature_table.drawOn(canvas, doc.leftMargin, 30)
         
         # Page number below signature
         page_num_text = f"Page {doc.page}"
