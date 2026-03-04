@@ -45,6 +45,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/wheels /wheels
 COPY --from=builder /app/requirements.txt .
 
+# Install base python tools (needed for pkg_resources)
+RUN pip install --no-cache-dir --upgrade pip setuptools
+
 # Install dependencies
 RUN pip install --no-cache /wheels/*
 
@@ -63,7 +66,7 @@ USER appuser
 
 # Collect static files (using a dummy secret key for build process)
 # Note: We do this here so the image is ready to serve static files
-RUN SECRET_KEY=django-insecure-c25blbdkg7f^+=u-8xejk54zwhetjxehk0i1=krxio1q$3hd*& python manage.py collectstatic --noinput
+RUN SECRET_KEY=dummy-build-key python manage.py collectstatic --noinput
 
 # Expose port
 EXPOSE 8000
