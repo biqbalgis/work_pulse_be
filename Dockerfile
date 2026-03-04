@@ -3,6 +3,7 @@
 # ===========================
 FROM python:3.12-slim AS builder
 
+# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
@@ -15,61 +16,60 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip tools
-RUN pip install --upgrade pip setuptools wheel
-
-# Copy requirements
+# Install python dependencies
 COPY requirements.txt .
-
-# Build wheels for dependencies
-RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
-
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
 
 # ===========================
 # FINAL STAGE
 # ===========================
 FROM python:3.12-slim
 
+# Create a non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HOME=/home/appuser
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies (libpq for postgres)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# Copy wheels from builder
+COPY --from=builder /app/wheels /wheels
+COPY --from=builder /app/requirements.txt .
 
-# Copy wheels and requirements
-COPY --from=builder /wheels /wheels
-COPY --from=builder /app/requirements.txt /app/requirements.txt
+# Install dependencies
+RUN pip install --no-cache /wheels/*
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir /wheels/*
+# Copy project files first
+COPY . /app/
 
-# Copy project
-COPY . /app
-
-# Copy entrypoint
+# Copy and set up entrypoint script (do this AFTER copying project files to ensure it's fresh)
 COPY entrypoint.sh /app/entrypoint.sh
-RUN sed -i 's/\r$//g' /app/entrypoint.sh \
-    && chmod +x /app/entrypoint.sh \
-    && mkdir -p /app/staticfiles /app/media \
-    && chown -R appuser:appuser /app
+RUN sed -i 's/\r$//g' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
-# Switch user
+# Create directory for static and media files and give ownership to appuser
+RUN mkdir -p /app/staticfiles /app/media && chown -R appuser:appuser /app
+
+# Switch to non-root user
 USER appuser
+
+# Collect static files (using a dummy secret key for build process)
+# Note: We do this here so the image is ready to serve static files
+RUN SECRET_KEY=dummy-build-key python manage.py collectstatic --noinput
 
 # Expose port
 EXPOSE 8000
 
-# Start script
+# Set entrypoint
 ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Default command
-CMD ["gunicorn", "work_pulse_be.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]
+CMD ["gunicorn", "work_pulse_be.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
