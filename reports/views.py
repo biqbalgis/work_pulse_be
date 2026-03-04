@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from django.http import FileResponse
 from django.shortcuts import render
@@ -915,6 +915,8 @@ class LEMDailyReportView(APIView):
         date_str = request.data.get("date")
         project_id = request.data.get("project_id")
         sign = request.data.get("sign",None)
+        sign_name = request.data.get("sign_name", "")
+        sign_date = request.data.get("sign_date", "")
         if not date_str or not project_id:
             return Response(
                 {"error": "date and project_id required"},
@@ -964,12 +966,19 @@ class LEMDailyReportView(APIView):
             project=project
         )
 
+        if sign and not sign_name:
+            sign_name = f"{request.user.first_name} {request.user.last_name}".strip()
+        if sign and not sign_date:
+            sign_date = timezone.localdate().isoformat()
+
         result = {
             "project_name": project.name,
             "client_name": project.client.name if project.client else "",
             "date": date_str,
             "lem_number": lem_report.lem_number,
             "sign": sign,
+            "sign_name": sign_name,
+            "sign_date": sign_date,
             "rows": rows
         }
 
@@ -998,6 +1007,8 @@ class LEMCostingReportView(APIView):
         date_str = request.data.get("date")
         project_id = request.data.get("project_id")
         sign = request.data.get("sign", None)
+        sign_name = request.data.get("sign_name", "")
+        sign_date = request.data.get("sign_date", "")
         if not date_str or not project_id:
             return Response(
                 {"error": "date and project_id required"},
@@ -1070,6 +1081,11 @@ class LEMCostingReportView(APIView):
             project=project
         )
 
+        if sign and not sign_name:
+            sign_name = f"{request.user.first_name} {request.user.last_name}".strip()
+        if sign and not sign_date:
+            sign_date = timezone.localdate().isoformat()
+
         # Prepare Result
         result = {
             "project_name": project.name,
@@ -1077,6 +1093,8 @@ class LEMCostingReportView(APIView):
             "date": date_str,
             "lem_number": lem_report.lem_number,
             "sign": sign,
+            "sign_name": sign_name,
+            "sign_date": sign_date,
             "rows": report_rows
         }
         
