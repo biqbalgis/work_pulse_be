@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import WeeklyPayrollReport, DailyRTOTReport, DailyDetailView, EmployeePayrollDashboard, DailyWorkReportView, \
-    LEMReportGenerationView, LEMDailyReportView, LEMCostingReportView
+    LEMReportGenerationView, LEMDailyReportView, LEMCostingReportView, TimeEntryExcelReportView
 
 urlpatterns = [
     path("weekly-payroll/", WeeklyPayrollReport.as_view(), name="weekly-payroll"),
@@ -11,4 +11,5 @@ urlpatterns = [
     path("lem-report/dailylemreport/", LEMDailyReportView.as_view(), name="lem-report-generate"),
     path("lem-report/costing/", LEMCostingReportView.as_view(), name="lem-report-costing"),
     path("payroll/employees/", EmployeePayrollDashboard.as_view()),
+    path("time-entry-excel/", TimeEntryExcelReportView.as_view(), name="time-entry-excel-report"),
 ]
