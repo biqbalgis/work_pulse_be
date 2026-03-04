@@ -46,7 +46,7 @@ def generate_daily_lem_pdf(data):
         try:
             head, base64_str = sign_data.split(",", 1)
             image_bytes = base64.b64decode(base64_str)
-            sign_image = Image(io.BytesIO(image_bytes), width=200, height=35, kind='proportional')
+            sign_image = Image(io.BytesIO(image_bytes), width=400, height=70, kind='proportional')
             sign_image.hAlign = "LEFT"
         except Exception:
             pass
@@ -112,15 +112,15 @@ def generate_daily_lem_pdf(data):
         
         # --- Draw Footer (Signature Section) ---
         signature_rows = [
+            [Paragraph("<b>Signature:</b>", styles["Normal"]),sign_image if sign_image else Paragraph("", styles["Normal"])],
             [Paragraph("<b>Name:</b>", styles["Normal"]), Paragraph(sign_name, styles["Normal"])],
-            [Paragraph("<b>Signature:</b>", styles["Normal"]), sign_image if sign_image else Paragraph("", styles["Normal"])],
             [Paragraph("<b>Date:</b>", styles["Normal"]), Paragraph(sign_date, styles["Normal"])],
         ]
         
         signature_table = Table(
             signature_rows,
             colWidths=[70, 220],
-            rowHeights=[16, 40, 16]
+            rowHeights=[35, 16, 16]
         )
 
         signature_table.setStyle(TableStyle([
@@ -234,7 +234,7 @@ def generate_costing_lem_pdf(data):
         try:
             head, base64_str = sign_data.split(",", 1)
             image_bytes = base64.b64decode(base64_str)
-            sign_image = Image(io.BytesIO(image_bytes), width=200, height=35, kind='proportional')
+            sign_image = Image(io.BytesIO(image_bytes), width=400, height=70, kind='proportional')
             sign_image.hAlign = "LEFT"
         except Exception:
             pass
@@ -292,15 +292,15 @@ def generate_costing_lem_pdf(data):
         
         # --- Draw Footer (Signature Section) ---
         signature_rows = [
+            [Paragraph("<b>Signature:</b>", styles["Normal"]),sign_image if sign_image else Paragraph("", styles["Normal"])],
             [Paragraph("<b>Name:</b>", styles["Normal"]), Paragraph(sign_name, styles["Normal"])],
-            [Paragraph("<b>Signature:</b>", styles["Normal"]), sign_image if sign_image else Paragraph("", styles["Normal"])],
             [Paragraph("<b>Date:</b>", styles["Normal"]), Paragraph(sign_date, styles["Normal"])],
         ]
         
         signature_table = Table(
             signature_rows,
-            colWidths=[70, 220],
-            rowHeights=[16, 40, 16]
+            colWidths=[70, 100],
+            rowHeights=[35, 16, 16]
         )
 
         signature_table.setStyle(TableStyle([
