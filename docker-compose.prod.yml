@@ -1,60 +1,67 @@
-
-
 services:
+  wait-for-db:
+    image: alpine:3.20
+    env_file:
+      - .env
+    command: >
+      sh -c "apk add --no-cache netcat-openbsd;
+             echo 'Waiting for database...';
+             while ! nc -z $DB_HOST ${DB_PORT:-5432}; do sleep 2; done;
+             echo 'Database is up';"
+    restart: "no"
+
   django:
     build:
       context: .
       dockerfile: Dockerfile
-    command: gunicorn work_pulse_be.wsgi:application --bind 0.0.0.0:8000
-    expose:
-      - 8000
+    command: gunicorn work_pulse_be.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120
     env_file:
       - .env
+    environment:
+      - WAIT_FOR_DB=true
+      - RUN_MIGRATIONS=true
+      - RUN_COLLECTSTATIC=true
+    expose:
+      - "8000"
     volumes:
       - static_volume:/app/staticfiles
       - media_volume:/app/media
     depends_on:
-      - wait-for-db
-
-  wait-for-db:
-    image: alpine
-    env_file:
-      - .env
-    command: >
-      sh -c "
-        apk add --no-cache netcat-openbsd;
-        echo Waiting for database...;
-        while ! nc -z $DB_HOST ${DB_PORT:-5432}; do
-          sleep 2;
-        done;
-        echo Database is up;
-      "
+      wait-for-db:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   nginx:
     image: nginx:1.25-alpine
-    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
-    volumes:
-      - ./nginx/templates:/etc/nginx/templates
-      - static_volume:/app/staticfiles
-      - media_volume:/app/media
-      - /etc/letsencrypt:/etc/letsencrypt
-      - /var/www/certbot:/var/www/certbot
+    env_file:
+      - .env
     environment:
       - NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/conf.d
-      - domain=${domain}
-    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - static_volume:/app/staticfiles:ro
+      - media_volume:/app/media:ro
+      - ./data/certbot/conf:/etc/letsencrypt
+      - ./data/certbot/www:/var/www/certbot
+    command: >
+      /bin/sh -c "while :; do sleep 6h & wait $${!}; nginx -s reload; done &
+                  nginx -g 'daemon off;'"
     depends_on:
-      - django
+      django:
+        condition: service_started
+    restart: unless-stopped
 
   certbot:
     image: certbot/certbot
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
     volumes:
-      - /etc/letsencrypt:/etc/letsencrypt
-      - /var/www/certbot:/var/www/certbot
+      - ./data/certbot/conf:/etc/letsencrypt
+      - ./data/certbot/www:/var/www/certbot
+    entrypoint: >
+      /bin/sh -c "trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;"
+    restart: unless-stopped
 
 volumes:
   static_volume:

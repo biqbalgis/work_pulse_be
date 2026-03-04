@@ -22,7 +22,7 @@ RUN pip install --upgrade pip setuptools wheel
 COPY requirements.txt .
 
 # Build wheels for dependencies
-RUN pip wheel --no-cache-dir --wheel-dir /app/wheels -r requirements.txt
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 
 # ===========================
@@ -31,13 +31,9 @@ RUN pip wheel --no-cache-dir --wheel-dir /app/wheels -r requirements.txt
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    HOME=/home/appuser
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
-
-# Create non-root user
-RUN groupadd -r appuser && useradd -r -g appuser appuser
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -45,9 +41,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
 # Copy wheels and requirements
-COPY --from=builder /app/wheels /wheels
-COPY --from=builder /app/requirements.txt .
+COPY --from=builder /wheels /wheels
+COPY --from=builder /app/requirements.txt /app/requirements.txt
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
@@ -58,10 +57,9 @@ COPY . /app
 
 # Copy entrypoint
 COPY entrypoint.sh /app/entrypoint.sh
-RUN sed -i 's/\r$//g' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
-
-# Create static/media folders
-RUN mkdir -p /app/staticfiles /app/media \
+RUN sed -i 's/\r$//g' /app/entrypoint.sh \
+    && chmod +x /app/entrypoint.sh \
+    && mkdir -p /app/staticfiles /app/media \
     && chown -R appuser:appuser /app
 
 # Switch user
@@ -74,4 +72,4 @@ EXPOSE 8000
 ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Default command
-CMD ["gunicorn", "work_pulse_be.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
+CMD ["gunicorn", "work_pulse_be.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]
