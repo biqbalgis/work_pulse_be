@@ -1,6 +1,7 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from django.http import FileResponse
+from django.utils import timezone
 from django.shortcuts import render
 from rest_framework import status
 from rest_framework.generics import get_object_or_404
@@ -19,7 +20,9 @@ from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceManager, IsSuperUser, IsWorkspaceUser
 from organization_asset.models import AssetUsage
 from .models import LEMReport
+from .excel_utils import generate_time_entry_report
 import io
+from django.http import HttpResponse, FileResponse
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Spacer, Paragraph
@@ -1111,3 +1114,36 @@ class LEMCostingReportView(APIView):
             filename=f"Daily_LEM_Costing_{date_str}.pdf",
             content_type="application/pdf"
         )
+
+class TimeEntryExcelReportView(APIView):
+    permission_classes = [IsAuthenticated, IsWorkspaceManager | IsSuperUser]
+
+    def get(self, request):
+        from_date_str = request.GET.get("from")
+        to_date_str = request.GET.get("to")
+        project_id = request.GET.get("project_id")
+
+        if not from_date_str or not to_date_str:
+            return Response({"error": "from and to dates are required"}, status=400)
+
+        try:
+            start_date = datetime.strptime(from_date_str, "%Y-%m-%d").date()
+            end_date = datetime.strptime(to_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+
+        try:
+            excel_file = generate_time_entry_report(start_date, end_date, project_id)
+
+            filename = f"Time_Entry_Report_{start_date}_to_{end_date}.xlsx"
+            if project_id:
+                filename = f"Project_{project_id}_Time_Report_{start_date}_to_{end_date}.xlsx"
+
+            response = HttpResponse(
+                excel_file.getvalue(),
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
+            return response
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)

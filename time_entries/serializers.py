@@ -42,6 +42,7 @@ class TimeEntrySerializer(serializers.ModelSerializer):
 
 class BulkTimeEntrySerializer(serializers.Serializer):
     date = serializers.DateField(format="%Y-%m-%d")
+    end_date = serializers.DateField(format="%Y-%m-%d", required=False, allow_null=True)
     user = serializers.UUIDField()
     project = serializers.UUIDField()
     job_title = serializers.UUIDField()

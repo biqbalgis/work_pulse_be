@@ -234,12 +234,13 @@ class BulkTimeEntryViewSet(viewsets.ViewSet):
 
                 # 4. Dates & Duration
                 entry_date = data['date'] # date object
+                end_date_val = data.get('end_date') or entry_date
                 start_time_obj = data['start_time'] # time object
                 end_time_obj = data['end_time'] # time object
                 
                 # Combine
                 start_dt_naive = datetime.combine(entry_date, start_time_obj)
-                end_dt_naive = datetime.combine(entry_date, end_time_obj)
+                end_dt_naive = datetime.combine(end_date_val, end_time_obj)
                 
                 # Make aware
                 # Assuming simple case: use current timezone or default
@@ -248,7 +249,6 @@ class BulkTimeEntryViewSet(viewsets.ViewSet):
                 end_dt = timezone.make_aware(end_dt_naive, current_tz)
                 
                 if end_dt <= start_dt:
-                    # Maybe it crosses midnight? For now strict check
                     raise ValidationError("End time must be after start time.")
                 
                 duration_seconds = (end_dt - start_dt).total_seconds()
