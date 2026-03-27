@@ -138,6 +138,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://64.23.184.224:3000",
     "http://64.23.184.224:8000",
     "https://test.workpulse.ca",
+    "https://dev.workpulse.ca",
     "https://www.workpulse.ca",
     "https://workpulse.ca",
 ]
@@ -148,7 +149,7 @@ domain = config('domain', default=None)
 if domain:
     CSRF_TRUSTED_ORIGINS = [f'https://{domain}']
 else:
-    CSRF_TRUSTED_ORIGINS = ["https://test.workpulse.ca"]
+    CSRF_TRUSTED_ORIGINS = ["https://dev.workpulse.ca"]
 
 CORS_ALLOW_CREDENTIALS = True
 
