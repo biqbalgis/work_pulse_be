@@ -1118,10 +1118,10 @@ class LEMCostingReportView(APIView):
 class TimeEntryExcelReportView(APIView):
     permission_classes = [IsAuthenticated, IsWorkspaceManager | IsSuperUser]
 
-    def get(self, request):
-        from_date_str = request.GET.get("from")
-        to_date_str = request.GET.get("to")
-        project_id = request.GET.get("project_id")
+    def post(self, request):
+        from_date_str = request.data.get("from")
+        to_date_str = request.data.get("to")
+        project_id = request.data.get("project_id")
 
         if not from_date_str or not to_date_str:
             return Response({"error": "from and to dates are required"}, status=400)
