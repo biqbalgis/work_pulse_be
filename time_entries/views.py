@@ -346,23 +346,33 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
             user=user
         )
 
-    def list(self, request):
-        queryset = self.get_queryset()
-        ids_param = request.query_params.get("ids")
-        date_param = request.query_params.get("date")
-        project_id_param = request.query_params.get("projects_id") or request.query_params.get("project_id")
-        start_date_param = request.query_params.get("start_date")
-        end_date_param = request.query_params.get("end_date")
+    def _filter_queryset(self, queryset, params):
+        def _get(key):
+            if hasattr(params, "get"):
+                return params.get(key)
+            return None
+
+        ids_param = _get("ids")
+        date_param = _get("date")
+        project_id_param = _get("projects_id") or _get("project_id")
+        start_date_param = _get("start_date")
+        end_date_param = _get("end_date")
 
         if ids_param:
-            ids = [item.strip() for item in ids_param.split(",") if item.strip()]
+            if isinstance(ids_param, (list, tuple)):
+                ids = [str(item) for item in ids_param if item]
+            else:
+                ids = [item.strip() for item in str(ids_param).split(",") if item.strip()]
             queryset = queryset.filter(id__in=ids)
 
         if date_param:
-            try:
-                target_date = datetime.strptime(date_param, "%Y-%m-%d").date()
-            except ValueError:
-                raise ValidationError("date must be in YYYY-MM-DD format.")
+            if isinstance(date_param, date):
+                target_date = date_param
+            else:
+                try:
+                    target_date = datetime.strptime(str(date_param), "%Y-%m-%d").date()
+                except ValueError:
+                    raise ValidationError("date must be in YYYY-MM-DD format.")
             queryset = queryset.filter(start_time__date=target_date)
         elif start_date_param or end_date_param:
             if not start_date_param:
@@ -370,8 +380,8 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
             if not end_date_param:
                 end_date_param = start_date_param
             try:
-                start_date = datetime.strptime(start_date_param, "%Y-%m-%d").date()
-                end_date = datetime.strptime(end_date_param, "%Y-%m-%d").date()
+                start_date = datetime.strptime(str(start_date_param), "%Y-%m-%d").date()
+                end_date = datetime.strptime(str(end_date_param), "%Y-%m-%d").date()
             except ValueError:
                 raise ValidationError("start_date/end_date must be in YYYY-MM-DD format.")
             queryset = queryset.filter(start_time__date__range=(start_date, end_date))
@@ -379,6 +389,10 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
         if project_id_param:
             queryset = queryset.filter(project_id=project_id_param)
 
+        return queryset
+
+    def list(self, request):
+        queryset = self._filter_queryset(self.get_queryset(), request.query_params)
         serializer = BulkTimeEntryOutputSerializer(queryset, many=True)
         return Response(serializer.data)
 
@@ -396,6 +410,11 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
         return local_dt.time().replace(second=0, microsecond=0, tzinfo=None)
 
     def create(self, request):
+        if isinstance(request.data, dict):
+            queryset = self._filter_queryset(self.get_queryset(), request.data)
+            serializer = BulkTimeEntryOutputSerializer(queryset, many=True)
+            return Response(serializer.data)
+
         serializer = BulkTimeEntryEditSerializer(data=request.data, many=True)
         serializer.is_valid(raise_exception=True)
 
