@@ -149,7 +149,7 @@ domain = config('domain', default=None)
 if domain:
     CSRF_TRUSTED_ORIGINS = [f'https://{domain}']
 else:
-    CSRF_TRUSTED_ORIGINS = ["https://dev.workpulse.ca"]
+    CSRF_TRUSTED_ORIGINS = ["https://test.workpulse.ca"]
 
 CORS_ALLOW_CREDENTIALS = True
 
