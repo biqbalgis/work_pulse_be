@@ -1,7 +1,8 @@
 from rest_framework.routers import DefaultRouter
-from .views import TimeEntryViewSet, BulkTimeEntryViewSet
+from .views import TimeEntryViewSet, BulkTimeEntryViewSet, BulkTimeEntryEditViewSet
 
 router = DefaultRouter()
 router.register(r'time-entries', TimeEntryViewSet, basename='time-entry')
 router.register(r'time_entries/bulk-create', BulkTimeEntryViewSet, basename='bulk-create')
+router.register(r'time_entries/bulk-edit', BulkTimeEntryEditViewSet, basename='bulk-edit')
 urlpatterns = router.urls

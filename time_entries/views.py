@@ -11,7 +11,12 @@ from django.contrib.auth import get_user_model
 from approvals.models import TimeEntryApprovalItem, TimeEntryApproval
 from approvals.utils import get_week_bounds
 from .models import TimeEntry
-from .serializers import TimeEntrySerializer, BulkTimeEntrySerializer
+from .serializers import (
+    TimeEntrySerializer,
+    BulkTimeEntrySerializer,
+    BulkTimeEntryEditSerializer,
+    BulkTimeEntryOutputSerializer,
+)
 from projects.models import ProjectRole
 from projects.models import UserProjectRole
 from workspaces.models import WorkspaceMember
@@ -318,5 +323,198 @@ class BulkTimeEntryViewSet(viewsets.ViewSet):
         return Response({
             "success_count": len(created_entries),
             "created_ids": created_entries,
+            "errors": errors
+        }, status=response_status)
+
+
+class BulkTimeEntryEditViewSet(viewsets.ViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if user.is_superuser:
+            return TimeEntry.objects.filter(is_deleted=False, user=user)
+
+        workspace_ids = WorkspaceMember.objects.filter(
+            user=user
+        ).values_list("workspace_id", flat=True)
+
+        return TimeEntry.objects.filter(
+            workspace_id__in=workspace_ids,
+            is_deleted=False,
+            user=user
+        )
+
+    def list(self, request):
+        queryset = self.get_queryset()
+        ids_param = request.query_params.get("ids")
+        date_param = request.query_params.get("date")
+        project_id_param = request.query_params.get("projects_id") or request.query_params.get("project_id")
+        start_date_param = request.query_params.get("start_date")
+        end_date_param = request.query_params.get("end_date")
+
+        if ids_param:
+            ids = [item.strip() for item in ids_param.split(",") if item.strip()]
+            queryset = queryset.filter(id__in=ids)
+
+        if date_param:
+            try:
+                target_date = datetime.strptime(date_param, "%Y-%m-%d").date()
+            except ValueError:
+                raise ValidationError("date must be in YYYY-MM-DD format.")
+            queryset = queryset.filter(start_time__date=target_date)
+        elif start_date_param or end_date_param:
+            if not start_date_param:
+                start_date_param = end_date_param
+            if not end_date_param:
+                end_date_param = start_date_param
+            try:
+                start_date = datetime.strptime(start_date_param, "%Y-%m-%d").date()
+                end_date = datetime.strptime(end_date_param, "%Y-%m-%d").date()
+            except ValueError:
+                raise ValidationError("start_date/end_date must be in YYYY-MM-DD format.")
+            queryset = queryset.filter(start_time__date__range=(start_date, end_date))
+
+        if project_id_param:
+            queryset = queryset.filter(project_id=project_id_param)
+
+        serializer = BulkTimeEntryOutputSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+    def _local_dt(self, dt):
+        if dt is None:
+            return None
+        if timezone.is_aware(dt):
+            return timezone.localtime(dt)
+        return dt
+
+    def _local_time(self, dt):
+        local_dt = self._local_dt(dt)
+        if not local_dt:
+            return None
+        return local_dt.time().replace(second=0, microsecond=0, tzinfo=None)
+
+    def create(self, request):
+        serializer = BulkTimeEntryEditSerializer(data=request.data, many=True)
+        serializer.is_valid(raise_exception=True)
+
+        updated_entries = []
+        errors = []
+
+        for index, data in enumerate(serializer.validated_data):
+            try:
+                entry_id = data["id"]
+                entry = self.get_queryset().filter(id=entry_id).first()
+                if not entry:
+                    raise ValidationError(f"Time entry {entry_id} not found.")
+
+                if entry.is_locked:
+                    raise ValidationError("This time entry is approved and cannot be edited.")
+
+                local_start_dt = self._local_dt(entry.start_time)
+                local_end_dt = self._local_dt(entry.end_time) if entry.end_time else None
+
+                entry_date = data.get("date") or local_start_dt.date()
+                start_time_val = data.get("start_time") or self._local_time(entry.start_time)
+                if start_time_val is None:
+                    raise ValidationError("start_time is required.")
+
+                if "end_date" in data:
+                    end_date_val = data.get("end_date") or entry_date
+                else:
+                    end_date_val = local_end_dt.date() if local_end_dt else entry_date
+
+                end_time_val = data.get("end_time") or self._local_time(entry.end_time)
+                if end_time_val is None:
+                    raise ValidationError("end_time is required.")
+
+                start_dt_naive = datetime.combine(entry_date, start_time_val)
+                end_dt_naive = datetime.combine(end_date_val, end_time_val)
+
+                current_tz = timezone.get_current_timezone()
+                start_dt = timezone.make_aware(start_dt_naive, current_tz)
+                end_dt = timezone.make_aware(end_dt_naive, current_tz)
+
+                if end_dt <= start_dt:
+                    raise ValidationError("End time must be after start time.")
+
+                if "user" in data and str(data.get("user")) != str(entry.user_id):
+                    raise ValidationError("user does not match the time entry owner.")
+
+                if "project" in data:
+                    project_id = data.get("project")
+                else:
+                    project_id = entry.project_id
+
+                if "job_title" in data:
+                    job_title_id = data.get("job_title")
+                else:
+                    job_title_id = entry.job_title_id
+
+                if not project_id or not job_title_id:
+                    raise ValidationError("project and job_title are required.")
+
+                upr = UserProjectRole.objects.filter(
+                    user=entry.user, project_id=project_id, job_title_id=job_title_id
+                ).first()
+
+                if upr:
+                    hourly_rate = upr.hourly_rate
+                else:
+                    project_role = ProjectRole.objects.filter(
+                        project_id=project_id, job_title_id=job_title_id
+                    ).first()
+                    if not project_role:
+                        raise ValidationError("This job title is not configured for this project.")
+                    hourly_rate = project_role.hourly_rate
+
+                if hourly_rate is None:
+                    raise ValidationError("Hourly rate not found.")
+
+                duration_seconds = (end_dt - start_dt).total_seconds()
+                duration_hours = Decimal(duration_seconds / 3600).quantize(Decimal("0.01"))
+                cost = duration_hours * Decimal(hourly_rate)
+
+                entry.project_id = project_id
+                entry.job_title_id = job_title_id
+                if "task" in data:
+                    entry.task_id = data.get("task")
+                if "description" in data:
+                    entry.description = data.get("description", "")
+                if "billable" in data:
+                    entry.billable = data.get("billable")
+                if "meals" in data:
+                    entry.meals = data.get("meals")
+                if "hotels" in data:
+                    entry.hotels = data.get("hotels")
+
+                entry.start_time = start_dt
+                entry.end_time = end_dt
+                entry.duration = int(duration_seconds // 60)
+                entry.hourly_rate = hourly_rate
+                entry.cost = cost
+                entry.save()
+
+                log_activity(
+                    request.user,
+                    action="UPDATE",
+                    model_name="TimeEntry",
+                    object_id=entry.id,
+                    request=request
+                )
+
+                updated_entries.append(entry.id)
+
+            except Exception as e:
+                errors.append({"index": index, "id": str(data.get("id")), "error": str(e)})
+
+        response_status = status.HTTP_200_OK
+        if errors:
+            response_status = 207
+
+        return Response({
+            "success_count": len(updated_entries),
+            "updated_ids": updated_entries,
             "errors": errors
         }, status=response_status)
