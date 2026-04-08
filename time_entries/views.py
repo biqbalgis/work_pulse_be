@@ -334,17 +334,26 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
         user = self.request.user
 
         if user.is_superuser:
-            return TimeEntry.objects.filter(is_deleted=False, user=user)
+            return TimeEntry.objects.filter(is_deleted=False)
 
-        workspace_ids = WorkspaceMember.objects.filter(
-            user=user
-        ).values_list("workspace_id", flat=True)
+        memberships = WorkspaceMember.objects.filter(
+            user=user,
+            is_active=True,
+            is_deleted=False,
+        )
+        workspace_ids = memberships.values_list("workspace_id", flat=True)
+        elevated_roles = {"admin", "manager", "field_manager"}
+        has_workspace_wide_access = memberships.filter(role__in=elevated_roles).exists()
 
-        return TimeEntry.objects.filter(
+        queryset = TimeEntry.objects.filter(
             workspace_id__in=workspace_ids,
             is_deleted=False,
-            user=user
         )
+
+        if has_workspace_wide_access:
+            return queryset
+
+        return queryset.filter(user=user)
 
     def _filter_queryset(self, queryset, params):
         def _get(key):
