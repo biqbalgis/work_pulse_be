@@ -2,6 +2,7 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from django.db.models import Sum
 from decimal import Decimal
 from datetime import datetime, date, timedelta
 from django.utils import timezone
@@ -10,6 +11,7 @@ from django.contrib.auth import get_user_model
 
 from approvals.models import TimeEntryApprovalItem, TimeEntryApproval
 from approvals.utils import get_week_bounds
+from reports.models import LEMReport
 from .models import TimeEntry
 from .serializers import (
     TimeEntrySerializer,
@@ -186,6 +188,106 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
                 usage.save()
 
         return updated_entry
+
+    def _sync_approval_after_delete(self, approval):
+        active_items = TimeEntryApprovalItem.objects.filter(approval=approval)
+
+        if not active_items.exists():
+            approval.delete()
+            return
+
+        total_minutes = (
+            active_items.filter(time_entry__is_deleted=False)
+            .aggregate(total_minutes=Sum("time_entry__duration"))
+            .get("total_minutes")
+            or 0
+        )
+        approval.total_hours = Decimal(total_minutes) / Decimal("60")
+        approval.save(update_fields=["total_hours"])
+
+    def _entry_dates(self, instance):
+        start_date = timezone.localtime(instance.start_time).date() if timezone.is_aware(instance.start_time) else instance.start_time.date()
+        end_dt = instance.end_time or instance.start_time
+        end_date = timezone.localtime(end_dt).date() if timezone.is_aware(end_dt) else end_dt.date()
+
+        current_date = start_date
+        dates = set()
+        while current_date <= end_date:
+            dates.add(current_date.isoformat())
+            current_date += timedelta(days=1)
+        return dates
+
+    def _normalize_text(self, value):
+        return " ".join(str(value or "").strip().lower().split())
+
+    def _lem_contains_entry(self, report_data, entry_dates, employee_name, job_title):
+        if not isinstance(report_data, dict):
+            return False
+
+        report_date = report_data.get("date")
+        if report_date in entry_dates:
+            for row in report_data.get("rows", []):
+                row_name = self._normalize_text(row.get("name") or row.get("employee_name"))
+                row_role = self._normalize_text(row.get("role") or row.get("job_title"))
+                if row_name == employee_name and (not row_role or row_role == job_title):
+                    return True
+
+        from_date = report_data.get("from_date")
+        to_date = report_data.get("to_date")
+        if from_date and to_date:
+            for report_day in report_data.get("daily_reports", []):
+                if report_day.get("date") not in entry_dates:
+                    continue
+                for employee in report_day.get("employees", []):
+                    row_name = self._normalize_text(employee.get("name"))
+                    if row_name == employee_name:
+                        return True
+
+        nested_report_data = report_data.get("report_data")
+        if isinstance(nested_report_data, dict):
+            for report_day_key, report_day in nested_report_data.items():
+                if report_day_key not in entry_dates:
+                    continue
+                for row in report_day.get("time_entries", []):
+                    row_name = self._normalize_text(row.get("name"))
+                    row_role = self._normalize_text(row.get("role"))
+                    if row_name == employee_name and (not row_role or row_role == job_title):
+                        return True
+
+        return False
+
+    def perform_destroy(self, instance):
+        employee_full_name = instance.user.get_full_name().strip() or f"{instance.user.first_name} {instance.user.last_name}".strip() or getattr(instance.user, "username", "")
+        employee_name = self._normalize_text(employee_full_name)
+        job_title = self._normalize_text(instance.job_title.name if instance.job_title else "")
+        entry_dates = self._entry_dates(instance)
+
+        lem_reports = LEMReport.objects.filter(project=instance.project)
+        if any(self._lem_contains_entry(lem_report.report_data, entry_dates, employee_name, job_title) for lem_report in lem_reports):
+            raise ValidationError("This time entry is already part of a LEM and cannot be deleted.")
+
+        approvals = list(
+            TimeEntryApproval.objects.filter(items__time_entry=instance).distinct()
+        )
+
+        for asset_usage in instance.asset_usages.all():
+            asset_usage.delete()
+
+        for approval_item in TimeEntryApprovalItem.objects.filter(time_entry=instance):
+            approval_item.delete()
+
+        instance.delete()
+
+        for approval in approvals:
+            self._sync_approval_after_delete(approval)
+
+        log_activity(
+            self.request.user,
+            action="DELETE",
+            model_name="TimeEntry",
+            object_id=instance.id,
+            request=self.request
+        )
 
 
 class BulkTimeEntryViewSet(viewsets.ViewSet):
