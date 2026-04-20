@@ -5,6 +5,7 @@ from rest_framework.exceptions import ValidationError
 from django.db.models import Sum
 from decimal import Decimal
 from datetime import datetime, date, timedelta
+from uuid import UUID
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 
@@ -432,6 +433,14 @@ class BulkTimeEntryViewSet(viewsets.ViewSet):
 class BulkTimeEntryEditViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
+    def _as_uuid_string(self, value):
+        if value in (None, ""):
+            return None
+        try:
+            return str(UUID(str(value)))
+        except (TypeError, ValueError, AttributeError):
+            return None
+
     def get_queryset(self):
         user = self.request.user
 
@@ -447,7 +456,7 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
         elevated_roles = {"admin", "manager", "field_manager"}
         has_workspace_wide_access = memberships.filter(role__in=elevated_roles).exists()
 
-        queryset = TimeEntry.objects.filter(
+        queryset = TimeEntry.objects.select_related("user").filter(
             workspace_id__in=workspace_ids,
             is_deleted=False,
         )
@@ -569,7 +578,8 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
                 if end_dt <= start_dt:
                     raise ValidationError("End time must be after start time.")
 
-                if "user" in data and str(data.get("user")) != str(entry.user_id):
+                submitted_user_id = self._as_uuid_string(data.get("user_uuid")) or self._as_uuid_string(data.get("user"))
+                if submitted_user_id and submitted_user_id != str(entry.user_id):
                     raise ValidationError("user does not match the time entry owner.")
 
                 if "project" in data:
