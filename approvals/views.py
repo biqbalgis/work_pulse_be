@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceUser
 from .models import TimeEntryApproval, TimeEntryApprovalItem
 from .serializers import TimeEntryApprovalSerializer, TimeEntryApprovalItemSerializer
@@ -13,9 +14,26 @@ from .utils import can_approve, calculate_rt_ot_and_cost
 
 
 class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
-    queryset = TimeEntryApproval.objects.filter(is_deleted=False)
     serializer_class = TimeEntryApprovalSerializer
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = TimeEntryApproval.objects.filter(is_deleted=False).select_related("user", "workspace")
+
+        if not user.is_superuser:
+            workspace_ids = WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
+            queryset = queryset.filter(workspace_id__in=workspace_ids)
+
+        workspace_id = self.request.query_params.get("workspace")
+        if workspace_id:
+            queryset = queryset.filter(workspace_id=workspace_id)
+
+        approval_status = self.request.query_params.get("status")
+        if approval_status:
+            queryset = queryset.filter(status=approval_status)
+
+        return queryset
 
     # ========== EMPLOYEE SUBMITS WEEK ==========
     def list(self, request, *args, **kwargs):
