@@ -64,3 +64,18 @@ class AddProjectRoleSerializer(serializers.Serializer):
     project = serializers.UUIDField()
     job_title_name = serializers.CharField(max_length=200)
     hourly_rate = serializers.DecimalField(max_digits=8, decimal_places=2)
+
+
+class AssignProjectRoleUsersSerializer(serializers.Serializer):
+    project = serializers.UUIDField()
+    job_title_name = serializers.CharField(max_length=200, trim_whitespace=True)
+    hourly_rate = serializers.DecimalField(max_digits=10, decimal_places=2)
+    users = serializers.ListField(
+        child=serializers.UUIDField(),
+        allow_empty=False
+    )
+
+    def validate_users(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Duplicate users are not allowed.")
+        return value

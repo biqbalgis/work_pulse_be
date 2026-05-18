@@ -2,6 +2,7 @@ from rest_framework.response import Response
 from rest_framework import viewsets, permissions, serializers,status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from django.db import transaction
 
 from .models import Project, ProjectRole, UserProjectRole, JobTitle
 from .serializers import (
@@ -10,11 +11,13 @@ from .serializers import (
     UserProjectRoleSerializer,
     JobTitleSerializer,
     AddProjectRoleSerializer,
+    AssignProjectRoleUsersSerializer,
     CurrentUserRoleSerializer,
 )
 from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser, IsWorkspaceAdminOrSuperUser
+from users.models import User
 
 
 def get_user_workspace(request):
@@ -117,6 +120,56 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         log_activity(self.request.user, "DELETE", "ProjectRole", instance.id, request=self.request)
         instance.delete()
 
+    def _get_project_for_request(self, request, project_id):
+        try:
+            project = Project.objects.get(id=project_id, is_deleted=False)
+        except Project.DoesNotExist:
+            raise ValidationError("Invalid project ID.")
+
+        if not request.user.is_superuser:
+            if not WorkspaceMember.objects.filter(user=request.user, workspace=project.workspace).exists():
+                raise ValidationError("You do not belong to this workspace.")
+
+        return project
+
+    def _get_or_create_job_title(self, job_title_name):
+        job_title = JobTitle.objects.filter(name__iexact=job_title_name).first()
+        if job_title:
+            return job_title, False
+
+        return JobTitle.objects.create(name=job_title_name), True
+
+    def _get_or_create_project_role(self, project, job_title, hourly_rate):
+        project_role, created = ProjectRole.objects.get_or_create(
+            project=project,
+            job_title=job_title,
+            defaults={"hourly_rate": hourly_rate}
+        )
+
+        if not created and project_role.hourly_rate != hourly_rate:
+            project_role.hourly_rate = hourly_rate
+            project_role.save(update_fields=["hourly_rate"])
+
+        return project_role, created
+
+    def _validate_project_users(self, project, requested_user_ids):
+        existing_user_ids = set(User.objects.filter(id__in=requested_user_ids).values_list("id", flat=True))
+        missing_user_ids = [str(user_id) for user_id in requested_user_ids if user_id not in existing_user_ids]
+        if missing_user_ids:
+            raise ValidationError({"users": f"Invalid user ids: {', '.join(missing_user_ids)}"})
+
+        member_user_ids = set(
+            WorkspaceMember.objects.filter(
+                workspace=project.workspace,
+                user_id__in=requested_user_ids
+            ).values_list("user_id", flat=True)
+        )
+        missing_member_ids = [str(user_id) for user_id in requested_user_ids if user_id not in member_user_ids]
+        if missing_member_ids:
+            raise ValidationError(
+                {"users": f"These users do not belong to the project workspace: {', '.join(missing_member_ids)}"}
+            )
+
     @action(detail=False, methods=['post'], url_path='add-project-role')
     def add_project_role(self, request):
         serializer = AddProjectRoleSerializer(data=request.data)
@@ -127,33 +180,13 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         hourly_rate = serializer.validated_data["hourly_rate"]
         user = request.user
 
-        # Workspace: ensure user belongs to the workspace of project
-        try:
-            project = Project.objects.get(id=project_id, is_deleted=False)
-        except Project.DoesNotExist:
-            raise ValidationError("Invalid project ID.")
-
-        if not request.user.is_superuser:
-            if not WorkspaceMember.objects.filter(user=user, workspace=project.workspace).exists():
-                raise ValidationError("You do not belong to this workspace.")
+        project = self._get_project_for_request(request, project_id)
 
         # Step 1: Create or get job title
-        job_title, created = JobTitle.objects.get_or_create(
-            name__iexact=job_title_name,
-            defaults={'name': job_title_name}
-        )
+        job_title, created = self._get_or_create_job_title(job_title_name)
 
         # Step 2: Create or update ProjectRole
-        project_role, pr_created = ProjectRole.objects.get_or_create(
-            project=project,
-            job_title=job_title,
-            defaults={"hourly_rate": hourly_rate}
-        )
-
-        # Update rate if already exists
-        if not pr_created:
-            project_role.hourly_rate = hourly_rate
-            project_role.save()
+        project_role, pr_created = self._get_or_create_project_role(project, job_title, hourly_rate)
 
         # Logging
         log_activity(
@@ -166,6 +199,68 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
 
         # Final response
         return Response({"project_role": ProjectRoleSerializer(project_role).data,"job_title_created": created,"project_role_created": pr_created},status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="assign-role-users")
+    def assign_role_users(self, request):
+        serializer = AssignProjectRoleUsersSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        project = self._get_project_for_request(request, serializer.validated_data["project"])
+        job_title_name = serializer.validated_data["job_title_name"].strip()
+        hourly_rate = serializer.validated_data["hourly_rate"]
+        user_ids = serializer.validated_data["users"]
+        self._validate_project_users(project, user_ids)
+
+        with transaction.atomic():
+            job_title, job_title_created = self._get_or_create_job_title(job_title_name)
+            project_role, project_role_created = self._get_or_create_project_role(
+                project,
+                job_title,
+                hourly_rate
+            )
+
+            log_activity(
+                request.user,
+                "CREATE" if project_role_created else "UPDATE",
+                "ProjectRole",
+                project_role.id,
+                request=request
+            )
+
+            assigned_users = []
+            created_any = job_title_created or project_role_created
+            for user_id in user_ids:
+                user_project_role, user_role_created = UserProjectRole.objects.update_or_create(
+                    project=project,
+                    user_id=user_id,
+                    job_title=job_title,
+                    defaults={"hourly_rate": hourly_rate}
+                )
+
+                log_activity(
+                    request.user,
+                    "CREATE" if user_role_created else "UPDATE",
+                    "UserProjectRole",
+                    user_project_role.id,
+                    request=request
+                )
+
+                assigned_users.append({
+                    "created": user_role_created,
+                    "user_project_role": UserProjectRoleSerializer(user_project_role).data,
+                })
+                created_any = created_any or user_role_created
+
+        return Response(
+            {
+                "project": str(project.id),
+                "job_title_created": job_title_created,
+                "project_role_created": project_role_created,
+                "project_role": ProjectRoleSerializer(project_role).data,
+                "assigned_users": assigned_users,
+            },
+            status=status.HTTP_201_CREATED if created_any else status.HTTP_200_OK
+        )
 
     @action(detail=False, methods=["post"], url_path="assign-user-role")
     def assign_user_role(self, request):
