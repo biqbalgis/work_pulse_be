@@ -56,6 +56,23 @@ class BulkTimeEntrySerializer(serializers.Serializer):
     hotels = serializers.BooleanField(default=False)
 
 
+class FieldTicketEntrySerializer(serializers.Serializer):
+    """One time entry row for the field-ticket bulk endpoint."""
+    user        = serializers.UUIDField()
+    project     = serializers.UUIDField()
+    job_title   = serializers.UUIDField()
+    task        = serializers.UUIDField(required=False, allow_null=True)
+    date        = serializers.DateField(format="%Y-%m-%d")
+    end_date    = serializers.DateField(format="%Y-%m-%d", required=False, allow_null=True)
+    start_time  = serializers.TimeField(format="%H:%M")
+    end_time    = serializers.TimeField(format="%H:%M")
+    description = serializers.CharField(required=False, allow_blank=True)
+    billable    = serializers.BooleanField(default=False)
+    meals       = serializers.BooleanField(default=False)
+    hotels      = serializers.BooleanField(default=False)
+    assets      = AssetUsageInputSerializer(many=True, required=False, default=list)
+
+
 class BulkTimeEntryEditSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     date = serializers.DateField(format="%Y-%m-%d", required=False)

@@ -11,6 +11,7 @@ class Project(SoftDeleteModel):
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True)
     name = models.CharField(max_length=255)
+    job_code = models.CharField(max_length=255, blank=True, null=True)
     color = models.CharField(max_length=7, null=True, blank=True)
     default_rt_hours = models.DecimalField(max_digits=5, decimal_places=2, default=8, null=True, blank=True)
     client_hours_rate = models.DecimalField(max_digits=8, decimal_places=4,null=True, blank=True)

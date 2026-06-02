@@ -60,6 +60,14 @@ class ProjectViewSet(viewsets.ModelViewSet):
         if client_id:
             queryset = queryset.filter(client=client_id)
 
+        job_code = self.request.query_params.get('job_code')
+        if job_code:
+            queryset = queryset.filter(job_code__icontains=job_code)
+
+        name = self.request.query_params.get('name')
+        if name:
+            queryset = queryset.filter(name__icontains=name)
+
         return queryset
 
     def perform_create(self, serializer):

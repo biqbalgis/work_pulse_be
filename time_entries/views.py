@@ -2,7 +2,9 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.views import APIView
 from django.db.models import Sum
+from collections import defaultdict
 from decimal import Decimal
 from datetime import datetime, date, timedelta
 from uuid import UUID
@@ -658,3 +660,111 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
             "updated_ids": updated_entries,
             "errors": errors
         }, status=response_status)
+
+
+class WeeklyHoursSummaryView(APIView):
+    """
+    POST /api/time_entries/weekly-hours-summary/
+
+    Body params:
+        start_date  (YYYY-MM-DD)  — first day of the week  [required]
+        end_date    (YYYY-MM-DD)  — last day of the week   [required]
+        project_id  (uuid)        — filter to one project  [optional]
+
+    Returns day-by-day hours per project, a weekly total per project,
+    and a grand total across all projects.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        data = request.data
+
+        start_str = data.get("start_date")
+        end_str   = data.get("end_date")
+
+        if not start_str or not end_str:
+            return Response(
+                {"error": "start_date and end_date are required (YYYY-MM-DD)"},
+                status=400,
+            )
+
+        try:
+            start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
+            end_date   = datetime.strptime(end_str,   "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+
+        if end_date < start_date:
+            return Response({"error": "end_date must be >= start_date"}, status=400)
+
+        # Build ordered list of dates in the requested range
+        week_days = []
+        cursor = start_date
+        while cursor <= end_date:
+            week_days.append(cursor)
+            cursor += timedelta(days=1)
+
+        # Base queryset — scoped to the authenticated user
+        qs = (
+            TimeEntry.objects
+            .filter(
+                user=request.user,
+                is_deleted=False,
+                start_time__date__gte=start_date,
+                start_time__date__lte=end_date,
+            )
+            .select_related("project")
+        )
+
+        # Optional single-project filter
+        project_id = data.get("project_id")
+        if project_id:
+            qs = qs.filter(project_id=project_id)
+
+        # Aggregate: total duration (minutes) per project per day
+        rows = (
+            qs
+            .values("project_id", "project__name", "start_time__date")
+            .annotate(total_minutes=Sum("duration"))
+            .order_by("project__name", "start_time__date")
+        )
+
+        # Shape into {project_id: {day: hours, ...}}
+        day_strings  = [d.isoformat() for d in week_days]
+        project_meta = {}   # project_id → name
+        project_days = defaultdict(lambda: defaultdict(float))
+
+        for row in rows:
+            pid   = str(row["project_id"]) if row["project_id"] else "__no_project__"
+            pname = row["project__name"]   or "No Project"
+            day   = row["start_time__date"].isoformat()
+            hrs   = round((row["total_minutes"] or 0) / 60, 2)
+
+            project_meta[pid] = pname
+            project_days[pid][day] += hrs
+
+        # Build response projects list
+        projects_out = []
+        grand_total  = 0.0
+
+        for pid, pname in project_meta.items():
+            daily = {d: round(project_days[pid].get(d, 0.0), 2) for d in day_strings}
+            weekly_total = round(sum(daily.values()), 2)
+            grand_total += weekly_total
+
+            projects_out.append({
+                "project_id":    pid,
+                "project_name":  pname,
+                "daily_hours":   daily,
+                "weekly_total":  weekly_total,
+            })
+
+        # Sort alphabetically by project name
+        projects_out.sort(key=lambda x: x["project_name"])
+
+        return Response({
+            "week":        day_strings,
+            "projects":    projects_out,
+            "grand_total": round(grand_total, 2),
+        })

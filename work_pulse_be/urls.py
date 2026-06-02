@@ -5,44 +5,46 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 urlpatterns = [
     path('admin/', admin.site.urls),
 
-    # 🔐 JWT Authentication
+    # JWT Authentication
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
-    # 🧩 Core App
+    # Core App
     path('api/core/', include('core.urls')),
 
-    # 👥 Users
+    # Users
     path('api/', include('users.urls')),
 
-    # 🏢 Workspaces
+    # Workspaces
     path('api/', include('workspaces.urls')),
 
-
-    # 🏢 Workspaces Asserts
+    # Workspace Assets
     path("api/assets/", include("organization_asset.urls")),
 
-    # 👨‍💼 Clients
+    # Clients
     path('api/', include('clients.urls')),
 
-    # 📁 Projects
+    # Projects
     path('api/', include('projects.urls')),
 
-    # ✅ Tasks
+    # Tasks
     path('api/', include('tasks.urls')),
 
-    # 🕒 Time Entries
+    # Time Entries
     path('api/', include('time_entries.urls')),
 
-    # 🧾 Approvals
+    # Approvals
     path('api/', include('approvals.urls')),
 
-    # 🌴 Time Off
+    # Time Off
     path('api/', include('time_off.urls')),
 
-    # 🏷️ Tags
+    # Tags
     path('api/', include('tags.urls')),
 
-    #  Reports
+    # Reports (existing)
     path("api/reports/", include("reports.urls")),
+
+    # Envision GEO Reports
+    path("api/reports/envision/", include("reports.envision_urls")),
 ]
