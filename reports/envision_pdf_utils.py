@@ -212,8 +212,8 @@ def _build_labour_table(labour_chunk):
     return tbl
 
 
-def _build_footer(data):
-    """Description + equipment + total + client rep / signature + thank-you."""
+def _build_footer(data, is_last_page=False):
+    """Description + equipment + total (last page only) + client rep / signature + thank-you."""
     elements = []
     elements.append(Spacer(1, 10))
 
@@ -265,24 +265,25 @@ def _build_footer(data):
     equip_tbl.setStyle(_grid_style())
     elements.append(equip_tbl)
 
-    # Total row
-    total_tbl = Table(
-        [[p(""), p("TOTAL", size=10, bold=True, align=TA_RIGHT),
-          p(data.get("total_cost", "$0.00"), size=10, bold=True, align=TA_RIGHT)]],
-        colWidths=[1.262*inch, 4.798*inch, 0.937*inch],
-        rowHeights=[0.28 * inch],
-    )
-    total_tbl.setStyle(TableStyle([
-        ("BOX",           (1, 0), (-1, -1), 0.5, BORDER_CLR),
-        ("INNERGRID",     (1, 0), (-1, -1), 0.5, BORDER_CLR),
-        ("ALIGN",         (0, 0), (-1, -1), "RIGHT"),
-        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING",    (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
-    ]))
-    elements.append(total_tbl)
+    # Total row — only on the last page (cumulative across all pages)
+    if is_last_page:
+        total_tbl = Table(
+            [[p(""), p("TOTAL", size=10, bold=True, align=TA_RIGHT),
+              p(data.get("total_cost", "$0.00"), size=10, bold=True, align=TA_RIGHT)]],
+            colWidths=[1.262*inch, 4.798*inch, 0.937*inch],
+            rowHeights=[0.28 * inch],
+        )
+        total_tbl.setStyle(TableStyle([
+            ("BOX",           (1, 0), (-1, -1), 0.5, BORDER_CLR),
+            ("INNERGRID",     (1, 0), (-1, -1), 0.5, BORDER_CLR),
+            ("ALIGN",         (0, 0), (-1, -1), "RIGHT"),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING",    (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(total_tbl)
     elements.append(Spacer(1, 14))
 
     # Client rep / signature
@@ -355,7 +356,7 @@ def generate_envision_lem_pdf(data: dict) -> io.BytesIO:
 
         story.extend(_build_header(data))
         story.append(_build_labour_table(chunk))
-        story.extend(_build_footer(data))
+        story.extend(_build_footer(data, is_last_page=(idx == len(chunks) - 1)))
 
     from functools import partial
     on_page = partial(_draw_page_number, total_pages=len(chunks))
