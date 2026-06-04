@@ -59,7 +59,7 @@ def calculate_rt_ot_and_cost(approval_items):
         project = entry.project
 
         # total hours for that day for that project
-        hours = Decimal(entry.duration) / Decimal(60)
+        hours = round(Decimal(entry.duration) / Decimal(60), 2)
 
         key = (date, project.id)
         daily_project_hours[key] += hours
@@ -97,8 +97,8 @@ def calculate_rt_ot_and_cost(approval_items):
         total_cost += (rt_cost + ot_cost)
 
     return {
-        "rt_hours": float(total_rt),
-        "ot_hours": float(total_ot),
-        "total_hours": float(total_rt + total_ot),
-        "total_cost": float(total_cost)
+        "rt_hours":    round(float(total_rt), 2),
+        "ot_hours":    round(float(total_ot), 2),
+        "total_hours": round(float(total_rt + total_ot), 2),
+        "total_cost":  round(float(total_cost), 2),
     }

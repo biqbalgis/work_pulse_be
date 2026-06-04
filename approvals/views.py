@@ -242,7 +242,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
             date = entry.start_time.date()
             project = entry.project
 
-            hours = Decimal(entry.duration) / Decimal(60)
+            hours = round(Decimal(entry.duration) / Decimal(60), 2)
             rt_limit = Decimal(project.default_rt_hours)
             ot_multiplier = Decimal(project.ot_multiplier)
 
@@ -270,11 +270,11 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
             project_list = []
             for name, data in projects.items():
                 project_list.append({
-                    "project": name,
-                    "hours_total": float(data["total"]),
-                    "rt_hours": float(data["rt"]),
-                    "ot_hours": float(data["ot"]),
-                    "cost": float(data["cost"])
+                    "project":     name,
+                    "hours_total": round(float(data["total"]), 2),
+                    "rt_hours":    round(float(data["rt"]),    2),
+                    "ot_hours":    round(float(data["ot"]),    2),
+                    "cost":        round(float(data["cost"]),  2),
                 })
             formatted_days.append({"date": str(date), "projects": project_list})
 
