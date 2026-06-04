@@ -11,15 +11,26 @@ class Project(SoftDeleteModel):
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True)
     name = models.CharField(max_length=255)
-    job_code = models.CharField(max_length=255, blank=True, null=True)
+    job_code = models.CharField(max_length=20, blank=True, null=True)
     color = models.CharField(max_length=7, null=True, blank=True)
     default_rt_hours = models.DecimalField(max_digits=5, decimal_places=2, default=8, null=True, blank=True)
     client_hours_rate = models.DecimalField(max_digits=8, decimal_places=4,null=True, blank=True)
     ot_multiplier = models.DecimalField(max_digits=5, decimal_places=2, default=2)  # default double rate
+    pm_info = models.JSONField(default=dict, blank=True, null=True)
     is_active = models.BooleanField(default=True)
     billable = models.BooleanField(default=False)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_projects')
     created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        unique_together = [('workspace', 'job_code')]
+
+    def save(self, *args, **kwargs):
+        # Auto-assign job_code only on creation if not provided
+        if not self.pk and not self.job_code:
+            from .utils import get_next_job_code
+            self.job_code = get_next_job_code(self.workspace)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.name
 

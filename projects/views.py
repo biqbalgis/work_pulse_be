@@ -5,6 +5,7 @@ from rest_framework.exceptions import ValidationError
 from django.db import transaction
 
 from .models import Project, ProjectRole, UserProjectRole, JobTitle
+from .utils import get_next_job_code
 from .serializers import (
     ProjectSerializer,
     ProjectRoleSerializer,
@@ -90,6 +91,30 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         log_activity(self.request.user, "DELETE", "Project", instance.id, request=self.request)
         instance.delete()
+
+    @action(detail=False, methods=["get"], url_path="next-job-number")
+    def next_job_number(self, request):
+        """
+        GET /api/projects/next-job-number/
+        Returns the next job number for the caller's workspace without saving it.
+        Superusers must pass ?workspace=<id>.
+        """
+        if request.user.is_superuser:
+            workspace_id = request.query_params.get("workspace")
+            if not workspace_id:
+                return Response({"error": "workspace query param is required for superusers."}, status=400)
+            from workspaces.models import Workspace
+            try:
+                workspace = Workspace.objects.get(id=workspace_id)
+            except Workspace.DoesNotExist:
+                return Response({"error": "Workspace not found."}, status=404)
+        else:
+            member = WorkspaceMember.objects.filter(user=request.user).first()
+            if not member:
+                return Response({"error": "You are not a member of any workspace."}, status=400)
+            workspace = member.workspace
+
+        return Response({"next_job_number": get_next_job_code(workspace)})
 
 class JobTitleViewSet(viewsets.ModelViewSet):
     queryset = JobTitle.objects.filter(is_deleted=False)

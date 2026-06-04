@@ -11,18 +11,35 @@ class ProjectSerializer(serializers.ModelSerializer):
     )
     workspace_name = serializers.CharField(source='workspace.name', read_only=True)
     client_name = serializers.CharField(source='client.name', read_only=True)
-    
+
     class Meta:
         model = Project
         fields = "__all__"
         read_only_fields = ["created_by"]  # DO NOT put workspace here
 
     def validate(self, attrs):
+        from workspaces.models import WorkspaceMember
+
         user = self.context['request'].user
 
-        # Non-superuser should NOT set workspace
-        if not user.is_superuser and "workspace" in attrs:
-            attrs.pop("workspace")
+        # Determine workspace — superuser passes it explicitly, others use membership
+        if user.is_superuser:
+            workspace = attrs.get('workspace') or (self.instance.workspace if self.instance else None)
+        else:
+            attrs.pop('workspace', None)
+            member = WorkspaceMember.objects.filter(user=user).first()
+            workspace = member.workspace if member else (self.instance.workspace if self.instance else None)
+
+        # Workspace-scoped job_code uniqueness check
+        job_code = attrs.get('job_code')
+        if job_code and workspace:
+            qs = Project.objects.filter(workspace=workspace, job_code=job_code, is_deleted=False)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({
+                    'job_code': f"Job number '{job_code}' is already used in this workspace."
+                })
 
         return attrs
 

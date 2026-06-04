@@ -10,7 +10,7 @@ class WorkspaceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Workspace
-        fields = ['id', 'name', 'address', 'pm_info', 'created_by', 'created_at', 'member_count']
+        fields = ['id', 'name', 'address', 'created_by', 'created_at', 'member_count']
         read_only_fields = ['id', 'created_by', 'created_at', 'member_count']
 
     def get_created_by(self, obj):

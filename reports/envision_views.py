@@ -28,7 +28,7 @@ class EnvisionLEMReportView(APIView):
     Generate and download an Envision GEO Field Ticket LEM PDF.
 
     Address, PM info, and job code are read from the database
-    (Workspace.address, Workspace.pm_info, Project.job_code).
+    (Workspace.address, Project.pm_info, Project.job_code).
 
     Required body params:
         project_id       (uuid)  — project to report on
@@ -66,7 +66,7 @@ class EnvisionLEMReportView(APIView):
 
         # ── Pull workspace-level info from DB ─────────────────────────────────
         workspace  = project.workspace
-        pm_info    = workspace.pm_info or {}          # {"pm_name": "", "contact": "", "phone": ""}
+        pm_info    = project.pm_info or {}            # {"pm_name": "", "contact": "", "phone": ""}
         pm_name    = pm_info.get("pm_name", "")
         pm_contact = pm_info.get("contact", "")
         pm_phone   = pm_info.get("phone", "")
