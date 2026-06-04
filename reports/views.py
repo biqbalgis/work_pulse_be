@@ -655,8 +655,8 @@ class DailyWorkReportView(APIView):
                 
                 user_name = entry.user.get_full_name()
                 role_name = entry.job_title.name if entry.job_title else "N/A"
-                hours = entry.duration / 60.0
-                
+                hours = round(entry.duration / 60.0, 2)
+
                 if key not in entries_map:
                     entries_map[key] = {
                         "name": user_name,
@@ -665,8 +665,8 @@ class DailyWorkReportView(APIView):
                         "equip": 0,
                         "hours": 0
                     }
-                
-                entries_map[key]["hours"] += float(hours)
+
+                entries_map[key]["hours"] += hours
                 
                 # Count assets for this entry
                 for usage in entry.asset_usages.all():
@@ -680,11 +680,11 @@ class DailyWorkReportView(APIView):
                                 "item": asset.name,
                                 "hours": 0.0,
                                 "units": 0.0,
-                                "rate": float(asset.quantity_rate) if asset.quantity_rate else 0.0,
+                                "rate": round(float(asset.quantity_rate), 2) if asset.quantity_rate else 0.0,
                                 "cost": 0.0
                             }
-                        asset_costs[asset.name]["units"] += float(usage.quantity_used or 0)
-                        asset_costs[asset.name]["cost"] += float(usage.cost)
+                        asset_costs[asset.name]["units"] += round(float(usage.quantity_used or 0), 2)
+                        asset_costs[asset.name]["cost"] += round(float(usage.cost), 2)
 
                     elif asset.charge_type == "hourly":
                         entries_map[key]["equip"] += 1
@@ -695,11 +695,11 @@ class DailyWorkReportView(APIView):
                                 "item": asset.name,
                                 "hours": 0.0,
                                 "units": 0.0,
-                                "rate": float(asset.hourly_rate) if asset.hourly_rate else 0.0,
+                                "rate": round(float(asset.hourly_rate), 2) if asset.hourly_rate else 0.0,
                                 "cost": 0.0
                             }
-                        asset_costs[asset.name]["hours"] += float(hours)
-                        asset_costs[asset.name]["cost"] += float(usage.cost)
+                        asset_costs[asset.name]["hours"] += hours
+                        asset_costs[asset.name]["cost"] += round(float(usage.cost), 2)
 
                 # 2. Descriptions
                 if entry.description:
@@ -711,11 +711,11 @@ class DailyWorkReportView(APIView):
                         "item": role_name,
                         "hours": 0.0,
                         "units": 0, 
-                        "rate": float(entry.hourly_rate) if entry.hourly_rate else 0.0, 
+                        "rate": round(float(entry.hourly_rate), 2) if entry.hourly_rate else 0.0,
                         "cost": 0.0
                     }
-                personnel_costs[role_name]["hours"] += float(hours)
-                personnel_costs[role_name]["cost"] += float(entry.cost)
+                personnel_costs[role_name]["hours"] += hours
+                personnel_costs[role_name]["cost"] += round(float(entry.cost), 2)
 
             # Convert entries map to list
             entries_list = []
@@ -864,9 +864,9 @@ class LEMReportGenerationView(APIView):
                         }
                     
                     if asset.charge_type == 'hourly':
-                        assets_map[asset.id]["usage"] += (entry.duration / 60.0)
+                        assets_map[asset.id]["usage"] += round(entry.duration / 60.0, 2)
                     else:
-                        assets_map[asset.id]["usage"] += float(usage.quantity_used or 0)
+                        assets_map[asset.id]["usage"] += round(float(usage.quantity_used or 0), 2)
 
             assets_data = []
             for asset_vals in assets_map.values():
@@ -1066,16 +1066,16 @@ class LEMCostingReportView(APIView):
             
             for jt_name, data in cost_map.items():
                 report_rows.append({
-                    "employee_name": f"{user.first_name} {user.last_name}",
-                    "job_title": jt_name,
-                    "regular_hours": float(data["reg"]),
-                    "regular_rate": float(data.get("reg_rate", 0)),
-                    "overtime_hours": float(data["ot"]),
-                    "overtime_rate": float(data.get("ot_rate", 0)),
-                    "double_time_hours": float(data["dt"]),
-                    "double_time_rate": float(data.get("dt_rate", 0)),
-                    "per_hour_cost": float(data["base_rate"]),
-                    "total_cost": float(data["cost"])
+                    "employee_name":    f"{user.first_name} {user.last_name}",
+                    "job_title":        jt_name,
+                    "regular_hours":    round(float(data["reg"]),             2),
+                    "regular_rate":     round(float(data.get("reg_rate", 0)), 2),
+                    "overtime_hours":   round(float(data["ot"]),              2),
+                    "overtime_rate":    round(float(data.get("ot_rate", 0)),  2),
+                    "double_time_hours":round(float(data["dt"]),              2),
+                    "double_time_rate": round(float(data.get("dt_rate", 0)),  2),
+                    "per_hour_cost":    round(float(data["base_rate"]),       2),
+                    "total_cost":       round(float(data["cost"]),            2),
                 })
 
         # Create LEM Report to auto-generate sequential number

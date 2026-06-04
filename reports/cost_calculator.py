@@ -29,7 +29,7 @@ class CostCalculator:
         is_holiday = self._is_stat_holiday()
         is_sunday = self.date_obj.weekday() == 6
         
-        total_hours = sum(e.duration for e in daily_entries) / 60.0
+        total_hours = round(sum(e.duration for e in daily_entries) / 60.0, 2)
         
         reg_hours = 0.0
         ot_hours = 0.0
@@ -207,11 +207,11 @@ class CostCalculator:
             jt_name = job_title.name
             if jt_name not in job_title_breakdowns:
                 job_title_breakdowns[jt_name] = {
-                    "reg": 0.0, "ot": 0.0, "dt": 0.0, "cost": Decimal(0.0), 
-                    "reg_rate": float(rate_obj.regular_cost),
-                    "ot_rate": float(rate_obj.overtime_cost),
-                    "dt_rate": float(rate_obj.double_time_cost),
-                    "base_rate": rate_obj.regular_cost # Representative rate
+                    "reg": 0.0, "ot": 0.0, "dt": 0.0, "cost": Decimal(0.0),
+                    "reg_rate":  round(float(rate_obj.regular_cost),     2),
+                    "ot_rate":   round(float(rate_obj.overtime_cost),    2),
+                    "dt_rate":   round(float(rate_obj.double_time_cost), 2),
+                    "base_rate": rate_obj.regular_cost,
                 }
             
             job_title_breakdowns[jt_name]["reg"] += entry_reg
