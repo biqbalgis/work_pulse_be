@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 from .views import TimeEntryViewSet, BulkTimeEntryViewSet, BulkTimeEntryEditViewSet, WeeklyHoursSummaryView
-from .field_ticket_views import FieldTicketBulkEntryView
+from .field_ticket_views import FieldTicketBulkEntryView, FixMissingApprovalsView
 
 router = DefaultRouter()
 router.register(r'time-entries', TimeEntryViewSet, basename='time-entry')
@@ -11,4 +11,5 @@ router.register(r'time_entries/bulk-edit', BulkTimeEntryEditViewSet, basename='b
 urlpatterns = router.urls + [
     path("time_entries/weekly-hours-summary/", WeeklyHoursSummaryView.as_view(), name="weekly-hours-summary"),
     path("time_entries/field-ticket-entry/", FieldTicketBulkEntryView.as_view(), name="field-ticket-entry"),
+    path("time_entries/fix-missing-approvals/", FixMissingApprovalsView.as_view(), name="fix-missing-approvals"),
 ]

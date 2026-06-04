@@ -4,7 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 
-from .models import Project, ProjectRole, UserProjectRole, JobTitle
+from .models import Project, ProjectRole, UserProjectRole, JobTitle, RoleTemplate, RoleTemplateUser
 from .utils import get_next_job_code
 from .serializers import (
     ProjectSerializer,
@@ -14,6 +14,8 @@ from .serializers import (
     AddProjectRoleSerializer,
     AssignProjectRoleUsersSerializer,
     CurrentUserRoleSerializer,
+    RoleTemplateCreateSerializer,
+    RoleTemplateOutputSerializer,
 )
 from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
@@ -412,3 +414,76 @@ class CurrentUserProjectRolesView(APIView):
 
         serializer = CurrentUserRoleSerializer(roles, many=True)
         return Response(serializer.data)
+
+
+class RoleTemplateViewSet(viewsets.ViewSet):
+    """
+    POST /api/role-templates/       — create a new template
+    GET  /api/role-templates/       — list all templates created by the current user
+    DELETE /api/role-templates/{id}/ — soft-delete a template
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def create(self, request):
+        serializer = RoleTemplateCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        job_title_id   = data['job_title_id']
+        job_title_name = data['job_title_name'].strip()
+        user_ids       = data['user_ids']
+
+        # Resolve or create the job title
+        job_title = JobTitle.objects.filter(id=job_title_id).first()
+        if not job_title:
+            # Fall back to name lookup, then create
+            job_title, _ = JobTitle.objects.get_or_create(name=job_title_name)
+
+        # Validate all user IDs exist
+        User = request.user.__class__
+        existing_ids = set(
+            User.objects.filter(id__in=user_ids).values_list('id', flat=True)
+        )
+        missing = [str(uid) for uid in user_ids if uid not in existing_ids]
+        if missing:
+            return Response(
+                {'error': f"Users not found: {', '.join(missing)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            template = RoleTemplate.objects.create(
+                template_name=data['template_name'],
+                job_title=job_title,
+                hourly_rate=data['hourly_rate'],
+                created_by=request.user,
+            )
+            RoleTemplateUser.objects.bulk_create([
+                RoleTemplateUser(template=template, user_id=uid)
+                for uid in user_ids
+            ])
+
+        log_activity(request.user, 'CREATE', 'RoleTemplate', template.id, request=request)
+
+        return Response(
+            RoleTemplateOutputSerializer(template).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    def list(self, request):
+        templates = (
+            RoleTemplate.objects
+            .filter(created_by=request.user, is_deleted=False)
+            .select_related('job_title', 'created_by')
+            .prefetch_related('template_users__user')
+            .order_by('-created_at')
+        )
+        return Response(RoleTemplateOutputSerializer(templates, many=True).data)
+
+    def destroy(self, request, pk=None):
+        template = RoleTemplate.objects.filter(id=pk, created_by=request.user, is_deleted=False).first()
+        if not template:
+            return Response({'error': 'Template not found.'}, status=status.HTTP_404_NOT_FOUND)
+        template.delete()
+        log_activity(request.user, 'DELETE', 'RoleTemplate', template.id, request=request)
+        return Response(status=status.HTTP_204_NO_CONTENT)

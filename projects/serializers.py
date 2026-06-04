@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from workspaces.models import Workspace
-from .models import Project, JobTitle, ProjectRole, UserProjectRole
+from .models import Project, JobTitle, ProjectRole, UserProjectRole, RoleTemplate, RoleTemplateUser
 
 
 class ProjectSerializer(serializers.ModelSerializer):
@@ -95,4 +95,50 @@ class AssignProjectRoleUsersSerializer(serializers.Serializer):
     def validate_users(self, value):
         if len(value) != len(set(value)):
             raise serializers.ValidationError("Duplicate users are not allowed.")
+        return value
+
+
+# ── Role Template Serializers ─────────────────────────────────────────────────
+
+class RoleTemplateUserOutputSerializer(serializers.ModelSerializer):
+    user_id        = serializers.UUIDField(source='user.id', read_only=True)
+    user_full_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    user_email     = serializers.EmailField(source='user.email', read_only=True)
+
+    class Meta:
+        model  = RoleTemplateUser
+        fields = ['user_id', 'user_full_name', 'user_email']
+
+
+class RoleTemplateOutputSerializer(serializers.ModelSerializer):
+    job_title_id   = serializers.UUIDField(source='job_title.id', read_only=True)
+    job_title_name = serializers.CharField(source='job_title.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+    users          = RoleTemplateUserOutputSerializer(source='template_users', many=True, read_only=True)
+
+    class Meta:
+        model  = RoleTemplate
+        fields = [
+            'id', 'template_name',
+            'job_title_id', 'job_title_name', 'hourly_rate',
+            'users',
+            'created_by', 'created_by_name',
+            'created_at', 'updated_at',
+        ]
+
+
+class RoleTemplateCreateSerializer(serializers.Serializer):
+    template_name  = serializers.CharField(max_length=255)
+    job_title_id   = serializers.UUIDField()
+    job_title_name = serializers.CharField(max_length=255)
+    hourly_rate    = serializers.DecimalField(max_digits=10, decimal_places=2)
+    user_ids       = serializers.ListField(
+        child=serializers.UUIDField(),
+        allow_empty=False,
+        min_length=1,
+    )
+
+    def validate_user_ids(self, value):
+        if len(value) != len(set(str(v) for v in value)):
+            raise serializers.ValidationError("Duplicate user IDs are not allowed.")
         return value

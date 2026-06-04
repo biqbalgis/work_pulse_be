@@ -69,6 +69,37 @@ class UserProjectRole(SoftDeleteModel):
         return f"{self.user.email} → {self.job_title.name} @ {self.project.name}"
 
 
+class RoleTemplate(SoftDeleteModel):
+    """
+    A named template that groups multiple users under a single job title.
+    Used to quickly re-apply the same crew+role combination across projects.
+    """
+    id          = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    template_name = models.CharField(max_length=255)
+    job_title   = models.ForeignKey(JobTitle, on_delete=models.CASCADE, related_name='role_templates')
+    hourly_rate = models.DecimalField(max_digits=10, decimal_places=2)
+    created_by  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_role_templates')
+    updated_by  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='updated_role_templates')
+    created_at  = models.DateTimeField(auto_now_add=True)
+    updated_at  = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.template_name} ({self.job_title.name})"
+
+
+class RoleTemplateUser(SoftDeleteModel):
+    """Each row links one user to a RoleTemplate."""
+    id       = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    template = models.ForeignKey(RoleTemplate, on_delete=models.CASCADE, related_name='template_users')
+    user     = models.ForeignKey(User, on_delete=models.CASCADE, related_name='role_template_entries')
+
+    class Meta:
+        unique_together = ('template', 'user')
+
+    def __str__(self):
+        return f"{self.template.template_name} → {self.user}"
+
+
 class LaborRate(SoftDeleteModel):
     ROLE_CONDITIONS = [
         ('Day', 'Day'),

@@ -10,6 +10,8 @@ from datetime import datetime
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -89,6 +91,7 @@ class FieldTicketBulkEntryView(APIView):
     #  Private helpers                                                     #
     # ------------------------------------------------------------------ #
 
+    @transaction.atomic
     def _create_single(self, request, data):
         """Validate, create one TimeEntry + its AssetUsages, wire up approval."""
 
@@ -203,4 +206,123 @@ class FieldTicketBulkEntryView(APIView):
             created_by=request.user,
         )
 
+        # Keep total_hours on the approval in sync
+        total_minutes = (
+            TimeEntryApprovalItem.objects
+            .filter(approval=approval, time_entry__is_deleted=False)
+            .aggregate(total=Sum('time_entry__duration'))
+            ['total'] or 0
+        )
+        approval.total_hours = Decimal(total_minutes) / Decimal(60)
+        approval.save(update_fields=["total_hours"])
+
         return time_entry
+
+
+class FixMissingApprovalsView(APIView):
+    """
+    POST /api/time_entries/fix-missing-approvals/
+
+    Admin / superuser only.
+    Backfills TimeEntryApproval + TimeEntryApprovalItem for every TimeEntry
+    that has no approval record.
+
+    Optional body params:
+        user_id  (uuid)  — limit fix to one user
+        dry_run  (bool)  — if true, returns what WOULD be fixed without saving
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        # Restrict to superuser or workspace admin
+        from workspaces.models import WorkspaceMember
+        is_admin = (
+            request.user.is_superuser or
+            WorkspaceMember.objects.filter(user=request.user, role__in=["admin", "manager"]).exists()
+        )
+        if not is_admin:
+            return Response({"error": "Only admins can run this fix."}, status=403)
+
+        dry_run    = request.data.get("dry_run", False)
+        user_id    = request.data.get("user_id")
+
+        orphaned_qs = (
+            TimeEntry.objects
+            .filter(is_deleted=False)
+            .exclude(
+                id__in=TimeEntryApprovalItem.objects.values_list("time_entry_id", flat=True)
+            )
+            .select_related("user", "workspace")
+            .order_by("user_id", "start_time")
+        )
+
+        if user_id:
+            orphaned_qs = orphaned_qs.filter(user_id=user_id)
+
+        fixed   = []
+        skipped = []
+
+        for entry in orphaned_qs:
+            user      = entry.user
+            workspace = entry.workspace
+
+            if not workspace:
+                wm = WorkspaceMember.objects.filter(user=user).first()
+                if not wm:
+                    skipped.append({"entry_id": str(entry.id), "reason": "No workspace membership."})
+                    continue
+                workspace = wm.workspace
+
+            entry_date           = entry.start_time.date()
+            start_week, end_week = get_week_bounds(entry_date)
+
+            record = {
+                "entry_id":   str(entry.id),
+                "user":       user.get_full_name(),
+                "date":       str(entry_date),
+                "week_start": str(start_week),
+                "week_end":   str(end_week),
+            }
+
+            if dry_run:
+                fixed.append(record)
+                continue
+
+            try:
+                with transaction.atomic():
+                    approval, created = TimeEntryApproval.objects.get_or_create(
+                        workspace=workspace,
+                        user=user,
+                        start_date=start_week,
+                        end_date=end_week,
+                        defaults={"status": "submitted", "created_by": user},
+                    )
+                    TimeEntryApprovalItem.objects.create(
+                        approval=approval,
+                        time_entry=entry,
+                        approved=True,
+                        created_by=request.user,
+                    )
+                    total_minutes = (
+                        TimeEntryApprovalItem.objects
+                        .filter(approval=approval, time_entry__is_deleted=False)
+                        .aggregate(total=Sum("time_entry__duration"))["total"] or 0
+                    )
+                    approval.total_hours = Decimal(total_minutes) / Decimal(60)
+                    approval.save(update_fields=["total_hours"])
+
+                record["approval_id"]      = str(approval.id)
+                record["approval_created"] = created
+                fixed.append(record)
+
+            except Exception as exc:
+                skipped.append({"entry_id": str(entry.id), "reason": str(exc)})
+
+        return Response({
+            "dry_run":       dry_run,
+            "fixed_count":   len(fixed),
+            "skipped_count": len(skipped),
+            "fixed":         fixed,
+            "skipped":       skipped,
+        })
