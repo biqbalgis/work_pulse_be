@@ -81,6 +81,17 @@ class EnvisionLEMReportView(APIView):
             .order_by("start_time")
         )
 
+        # ── Guard: no data = no PDF ───────────────────────────────────────────
+        if not entries.exists():
+            return Response(
+                {
+                    "error": "No time entries found for this project on the selected date.",
+                    "project_id": str(project_id),
+                    "date": date_str,
+                },
+                status=404,
+            )
+
         # ── Build labour rows ─────────────────────────────────────────────────
         # Aggregate per (user, job_title) so multiple entries per user collapse.
         labour_map = {}  # key: (user_id, job_title_id)
@@ -173,22 +184,25 @@ class EnvisionLEMReportView(APIView):
             or (". ".join(desc_parts) + "." if desc_parts else "N/A")
         )
 
-        # ── Generate LEM-FT-### number (separate sequence from standard LEMs) ──
-        FT_PREFIX = "LEM-FT-"
+        # ── Generate Field Ticket number (isolated sequence, workspace-wide) ───
+        # Stored in DB as "FT-000001" to prevent any collision with other LEM types.
+        # Displayed on the PDF as "000001" (prefix stripped).
+        FT_DB_PREFIX = "FT-"
         last_ft = (
             LEMReport.objects
-            .filter(project=project, lem_number__startswith=FT_PREFIX)
+            .filter(project__workspace=workspace, lem_number__startswith=FT_DB_PREFIX)
             .order_by("-id")
             .first()
         )
         if last_ft:
             try:
-                last_num = int(last_ft.lem_number.split("-")[-1])
-            except (ValueError, IndexError):
+                last_num = int(last_ft.lem_number.replace(FT_DB_PREFIX, ""))
+            except ValueError:
                 last_num = 0
         else:
             last_num = 0
-        ft_lem_number = f"{FT_PREFIX}{last_num + 1:03d}"
+        ft_db_number      = f"{FT_DB_PREFIX}{last_num + 1:06d}"  # e.g. FT-000001 (stored in DB)
+        ft_display_number = f"{last_num + 1:06d}"                 # e.g. 000001   (shown on PDF)
 
         lem_report = LEMReport(
             requester=request.user,
@@ -196,7 +210,7 @@ class EnvisionLEMReportView(APIView):
             report_data={},
         )
         # Bypass the model's auto-generate by setting lem_number before save
-        lem_report.lem_number = ft_lem_number
+        lem_report.lem_number = ft_db_number      # FT-000001 stored in DB
         lem_report.save()
 
         # ── Signature fields (still caller-supplied) ──────────────────────────
@@ -206,7 +220,7 @@ class EnvisionLEMReportView(APIView):
         sign_date = data.get("sign_date") or date_str
 
         pdf_data = {
-            "lem_number":       lem_report.lem_number,
+            "lem_number":       ft_display_number,     # 000001 shown on PDF
             "lem_date":         date_str,
             # ── From DB ───────────────────────────────────────────────────────
             "company_address":  address_lines,
@@ -228,15 +242,70 @@ class EnvisionLEMReportView(APIView):
             "sign_date":        sign_date if sign else "",
         }
 
-        # Save report snapshot
+        # Save full report snapshot — always stored regardless of PDF outcome
         lem_report.report_data = pdf_data
         lem_report.save()
 
-        pdf_buffer = generate_envision_lem_pdf(pdf_data)
+        # Generate PDF — if this fails, delete the orphan LEMReport record
+        try:
+            pdf_buffer = generate_envision_lem_pdf(pdf_data)
+        except Exception as exc:
+            lem_report.delete()
+            return Response(
+                {"error": f"PDF generation failed: {str(exc)}"},
+                status=500,
+            )
 
         return FileResponse(
             pdf_buffer,
             as_attachment=True,
-            filename=f"Envision_LEM_{lem_report.lem_number}_{date_str}.pdf",
+            filename=f"Envision_LEM_{ft_display_number}_{date_str}.pdf",
             content_type="application/pdf",
         )
+  
+
+def _resolve_lem_number(query: str) -> str:
+    """
+    Smart LEM number resolver:
+      - Pure digits (e.g. "000001") → "FT-000001"  (field ticket)
+      - Anything else (e.g. "LEM-001") → unchanged  (standard LEM)
+    """
+    return f"FT-{query.strip()}" if query.strip().isdigit() else query.strip()
+
+
+class EnvisionLEMSearchView(APIView):
+    """
+    Look up a saved LEM report by number.
+
+    GET /api/reports/envision/fieldTicket_Lem/?lem_number=000001
+    GET /api/reports/envision/fieldTicket_Lem/?lem_number=LEM-001
+
+    Pass the number exactly as displayed — pure digits for field tickets,
+    LEM-### for standard LEMs. The system resolves the DB key automatically.
+    Returns the saved report_data JSON, or 404 if not found.
+    """
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def get(self, request):
+        raw = request.query_params.get("lem_number", "").strip()
+        if not raw:
+            return Response({"error": "lem_number query parameter is required"}, status=400)
+
+        db_key = _resolve_lem_number(raw)
+
+        try:
+            report = LEMReport.objects.get(lem_number=db_key)
+        except LEMReport.DoesNotExist:
+            return Response(
+                {"error": f"No LEM report found for '{raw}' (looked up as '{db_key}')"},
+                status=404,
+            )
+
+        return Response({
+            "lem_number":    raw,       # what the user typed
+            "db_key":        db_key,    # what is stored in DB
+            "report_data":   report.report_data,
+            "created_at":    report.created_at,
+            "project":       str(report.project_id) if report.project else None,
+            "requester":     report.requester.get_full_name() if report.requester else None,
+        })
