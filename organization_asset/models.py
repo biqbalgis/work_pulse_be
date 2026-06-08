@@ -22,7 +22,7 @@ class OrganizationAsset(SoftDeleteModel):
     # If charge_type = quantity
     quantity_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     # Inventory quantity for quantity-based assets
-    total_quantity = models.PositiveIntegerField(default=0)
+    total_quantity = models.PositiveIntegerField(default=0,null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

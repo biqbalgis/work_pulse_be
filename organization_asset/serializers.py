@@ -14,8 +14,4 @@ class OrganizationAssetSerializer(serializers.ModelSerializer):
         if charge_type == "hourly" and not data.get("hourly_rate"):
             raise serializers.ValidationError("Hourly assets require hourly_rate.")
 
-        # Validate quantity asset must have quantity_rate
-        if charge_type == "quantity" and not data.get("quantity_rate"):
-            raise serializers.ValidationError("Quantity assets require quantity_rate.")
-
         return data
