@@ -74,18 +74,24 @@ class ProjectViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
+        from workspaces.models import Workspace
+
         user = self.request.user
         if user.is_superuser:
-            workspace = serializer.validated_data.get("workspace")
-            if workspace is None:
+            # workspace is read-only in the serializer, so read it directly from request.data
+            workspace_id = self.request.data.get("workspace")
+            if not workspace_id:
                 raise serializers.ValidationError({"workspace": "Workspace is required for superuser."})
-
-            # NON-SUPERUSER: workspace MUST NOT come from payload. Use membership.
+            try:
+                workspace = Workspace.objects.get(id=workspace_id)
+            except Workspace.DoesNotExist:
+                raise serializers.ValidationError({"workspace": "Workspace not found."})
         else:
             member = WorkspaceMember.objects.filter(user=user).first()
             if not member:
                 raise serializers.ValidationError("User is not a member of any workspace.")
             workspace = member.workspace
+
         instance = serializer.save(workspace=workspace, created_by=user)
         log_activity(user, "CREATE", "Project", instance.id, request=self.request)
 

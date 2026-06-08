@@ -1,32 +1,37 @@
 from rest_framework import serializers
 
-from workspaces.models import Workspace
 from .models import Project, JobTitle, ProjectRole, UserProjectRole, RoleTemplate, RoleTemplateUser
 
 
 class ProjectSerializer(serializers.ModelSerializer):
-    workspace = serializers.PrimaryKeyRelatedField(
-        queryset=Workspace.objects.all(),
-        required=False  # 👈 IMPORTANT
-    )
     workspace_name = serializers.CharField(source='workspace.name', read_only=True)
     client_name = serializers.CharField(source='client.name', read_only=True)
 
     class Meta:
         model = Project
         fields = "__all__"
-        read_only_fields = ["created_by"]  # DO NOT put workspace here
+        # workspace is always set server-side — never accepted from the payload
+        read_only_fields = ["created_by", "workspace"]
 
     def validate(self, attrs):
-        from workspaces.models import WorkspaceMember
+        from workspaces.models import WorkspaceMember, Workspace
 
         user = self.context['request'].user
 
-        # Determine workspace — superuser passes it explicitly, others use membership
+        # Resolve workspace for job_code uniqueness check only.
+        # Superusers pass workspace in request.data (not in validated_data since it's read-only).
+        # Non-superusers always get workspace from their membership.
         if user.is_superuser:
-            workspace = attrs.get('workspace') or (self.instance.workspace if self.instance else None)
+            workspace_id = self.context['request'].data.get('workspace')
+            workspace = None
+            if workspace_id:
+                try:
+                    workspace = Workspace.objects.get(id=workspace_id)
+                except Workspace.DoesNotExist:
+                    raise serializers.ValidationError({"workspace": "Workspace not found."})
+            elif self.instance:
+                workspace = self.instance.workspace
         else:
-            attrs.pop('workspace', None)
             member = WorkspaceMember.objects.filter(user=user).first()
             workspace = member.workspace if member else (self.instance.workspace if self.instance else None)
 
