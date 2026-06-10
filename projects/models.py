@@ -23,6 +23,7 @@ class Project(SoftDeleteModel):
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         unique_together = [('workspace', 'job_code')]
+        ordering = ['-created_at']
 
     def save(self, *args, **kwargs):
         # Auto-assign job_code only on creation if not provided
