@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
 from projects.models import Project
+from tasks.models import Task
 from time_entries.models import TimeEntry
 from workspaces.permissions import IsWorkspaceUser
 from .models import LEMReport
@@ -32,6 +33,7 @@ class EnvisionLEMReportView(APIView):
 
     Required body params:
         project_id       (uuid)  — project to report on
+        task_id          (uuid)  — task within the project to report on
         date             (str)   — report date, YYYY-MM-DD
 
     Optional body params:
@@ -49,10 +51,11 @@ class EnvisionLEMReportView(APIView):
 
         # ── Validate required fields ──────────────────────────────────────────
         project_id = data.get("project_id")
+        task_id    = data.get("task_id")
         date_str   = data.get("date")
 
-        if not project_id or not date_str:
-            return Response({"error": "project_id and date are required"}, status=400)
+        if not project_id or not task_id or not date_str:
+            return Response({"error": "project_id, task_id and date are required"}, status=400)
 
         try:
             report_date = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -63,6 +66,11 @@ class EnvisionLEMReportView(APIView):
             project = Project.objects.select_related("client", "workspace").get(id=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found"}, status=404)
+
+        try:
+            task = Task.objects.get(id=task_id, project=project)
+        except Task.DoesNotExist:
+            return Response({"error": "Task not found for this project"}, status=404)
 
         # ── Pull workspace-level info from DB ─────────────────────────────────
         workspace     = project.workspace
@@ -75,7 +83,7 @@ class EnvisionLEMReportView(APIView):
         # ── Fetch time entries ────────────────────────────────────────────────
         entries = (
             TimeEntry.objects
-            .filter(project_id=project_id, start_time__date=report_date)
+            .filter(project_id=project_id, task_id=task_id, start_time__date=report_date)
             .select_related("user", "job_title")
             .prefetch_related("asset_usages__asset")
             .order_by("start_time")
@@ -214,6 +222,7 @@ class EnvisionLEMReportView(APIView):
             "lem_date":         date_str,
             "company_address":  address_lines,
             "project_name":     project.name,
+            "task_name":        task.name,
             "job_number":       project.job_code or "",
             "client":           project.client.name if project.client else "",
             "pm_name":          pm_name,

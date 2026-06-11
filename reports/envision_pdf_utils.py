@@ -9,6 +9,7 @@ Expected `data` dict shape:
     "lem_date": "2026-06-01",
     "company_address": ["1201 5 St SW", "Suite 203", "Calgary AB T2R 2Y6"],
     "project_name": "Highway 2 Overpass",
+    "task_name": "Bridge Deck Survey",
     "job_number": "260142",
     "client": "Kiewit Construction",
     "pm_name": "Tyson Bancroft",
@@ -151,8 +152,9 @@ def _build_header(data):
     proj_table = Table(
         [[
             Paragraph(
-                "Project Name: {}<br/>Job Number: {}<br/>Client: {}".format(
+                "Project Name: {}<br/>Task: {}<br/>Job Number: {}<br/>Client: {}".format(
                     data.get("project_name", ""),
+                    data.get("task_name", ""),
                     data.get("job_number", ""),
                     data.get("client", ""),
                 ),
