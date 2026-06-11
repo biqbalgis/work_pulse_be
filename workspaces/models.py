@@ -6,9 +6,22 @@ from work_pulse_be import settings
 import uuid
 
 class Workspace(SoftDeleteModel):
+    OVERTIME_POLICY_CHOICES = (
+        ('standard', 'Standard (per-project daily RT/OT table, e.g. Stamsh)'),
+        ('envision', 'EnvisionGeo (8h/day Mon-Fri, 4h Sat, 44h weekly cap, OT @ 1.5x)'),
+    )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     address = models.CharField(max_length=255, blank=True, null=True)
+    overtime_policy = models.CharField(
+        max_length=20,
+        choices=OVERTIME_POLICY_CHOICES,
+        null=True,
+        blank=True,
+        default=None,
+        help_text='Optional. Leave empty for no overtime policy (all hours counted as regular).'
+    )
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_workspaces')
     created_at = models.DateTimeField(auto_now_add=True)
 

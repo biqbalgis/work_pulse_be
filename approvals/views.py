@@ -42,7 +42,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         data = []
         for approval in approvals:
             items = approval.items.select_related("time_entry__project")
-            metrics = calculate_rt_ot_and_cost(items)
+            metrics = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
 
             data.append({
                 "id": approval.id,
@@ -222,61 +222,26 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         items = approval.items.select_related("time_entry__project")
 
         from collections import defaultdict
-        from decimal import Decimal
-        from approvals.utils import calculate_rt_ot_and_cost
 
-        # 🌐 Overall Summary for the whole approval
-        summary = calculate_rt_ot_and_cost(items)
+        # 🌐 Overall summary + per-(date, project) breakdown.
+        # RT/OT logic is policy-aware (standard vs envision) inside the helper.
+        summary = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
 
-        # 📆 Daily + Project breakdown storage
-        breakdown = defaultdict(lambda: defaultdict(lambda: {
-            "total": Decimal("0.00"),
-            "rt": Decimal("0.00"),
-            "ot": Decimal("0.00"),
-            "cost": Decimal("0.00")
-        }))
+        # 📆 Regroup breakdown by date for the response
+        days = defaultdict(list)
+        for (date, project_name), data in summary["breakdown"].items():
+            days[date].append({
+                "project":     project_name,
+                "hours_total": round(float(data["total"]), 2),
+                "rt_hours":    round(float(data["rt"]),    2),
+                "ot_hours":    round(float(data["ot"]),    2),
+                "cost":        round(float(data["cost"]),  2),
+            })
 
-        # 🧮 Process every entry inside approval
-        for item in items:
-            entry = item.time_entry
-            date = entry.start_time.date()
-            project = entry.project
-
-            hours = round(Decimal(entry.duration) / Decimal(60), 2)
-            rt_limit = Decimal(project.default_rt_hours)
-            ot_multiplier = Decimal(project.ot_multiplier)
-
-            # ➗ RT/OT logic
-            rt = min(hours, rt_limit)
-            ot = max(hours - rt_limit, Decimal("0.00"))
-
-            # 💵 Cost only if billable (Option B)
-            if entry.billable:
-                rt_cost = Decimal(entry.hourly_rate) * rt
-                ot_cost = Decimal(entry.hourly_rate) * ot_multiplier * ot
-            else:
-                rt_cost = Decimal("0.00")
-                ot_cost = Decimal("0.00")
-
-            # 🔄 Add values to breakdown dictionary
-            breakdown[date][project.name]["total"] += hours
-            breakdown[date][project.name]["rt"] += rt
-            breakdown[date][project.name]["ot"] += ot
-            breakdown[date][project.name]["cost"] += (rt_cost + ot_cost)
-
-        # 📌 Convert breakdown to JSON-friendly format
-        formatted_days = []
-        for date, projects in breakdown.items():
-            project_list = []
-            for name, data in projects.items():
-                project_list.append({
-                    "project":     name,
-                    "hours_total": round(float(data["total"]), 2),
-                    "rt_hours":    round(float(data["rt"]),    2),
-                    "ot_hours":    round(float(data["ot"]),    2),
-                    "cost":        round(float(data["cost"]),  2),
-                })
-            formatted_days.append({"date": str(date), "projects": project_list})
+        formatted_days = [
+            {"date": str(date), "projects": projects}
+            for date, projects in sorted(days.items())
+        ]
 
         # 📤 Final Response JSON
         return Response({
