@@ -123,12 +123,9 @@ class EnvisionLEMReportView(APIView):
             for row in labour_map.values()
         ]
 
-        # ── Build equipment rows & total cost ─────────────────────────────────
+        # ── Build equipment rows & total cost (equipment only) ───────────────
         asset_map  = {}
         total_cost = Decimal("0")
-
-        for entry in entries:
-            total_cost += Decimal(entry.cost or 0)
 
         for entry in entries:
             for usage in entry.asset_usages.all():
