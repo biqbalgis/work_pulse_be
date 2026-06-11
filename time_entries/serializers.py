@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.utils import timezone
 
 from organization_asset.models import AssetUsage
 from .models import TimeEntry
@@ -53,3 +54,99 @@ class BulkTimeEntrySerializer(serializers.Serializer):
     billable = serializers.BooleanField(default=False)
     meals = serializers.BooleanField(default=False)
     hotels = serializers.BooleanField(default=False)
+
+
+class FieldTicketEntrySerializer(serializers.Serializer):
+    """One time entry row for the field-ticket bulk endpoint."""
+    user        = serializers.UUIDField()
+    project     = serializers.UUIDField()
+    job_title   = serializers.UUIDField()
+    task        = serializers.UUIDField(required=False, allow_null=True)
+    date        = serializers.DateField(format="%Y-%m-%d")
+    end_date    = serializers.DateField(format="%Y-%m-%d", required=False, allow_null=True)
+    start_time  = serializers.TimeField(format="%H:%M")
+    end_time    = serializers.TimeField(format="%H:%M")
+    description = serializers.CharField(required=False, allow_blank=True)
+    billable    = serializers.BooleanField(default=False)
+    meals       = serializers.BooleanField(default=False)
+    hotels      = serializers.BooleanField(default=False)
+    assets      = AssetUsageInputSerializer(many=True, required=False, default=list)
+
+
+class BulkTimeEntryEditSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    date = serializers.DateField(format="%Y-%m-%d", required=False)
+    end_date = serializers.DateField(format="%Y-%m-%d", required=False, allow_null=True)
+    user = serializers.CharField(required=False, allow_blank=True)
+    user_uuid = serializers.UUIDField(required=False)
+    project = serializers.UUIDField(required=False, allow_null=True)
+    job_title = serializers.UUIDField(required=False, allow_null=True)
+    task = serializers.UUIDField(required=False, allow_null=True)
+    start_time = serializers.TimeField(format="%H:%M", required=False)
+    end_time = serializers.TimeField(format="%H:%M", required=False)
+    description = serializers.CharField(required=False, allow_blank=True)
+    billable = serializers.BooleanField(required=False)
+    meals = serializers.BooleanField(required=False)
+    hotels = serializers.BooleanField(required=False)
+
+
+class BulkTimeEntryOutputSerializer(serializers.ModelSerializer):
+    user = serializers.SerializerMethodField()
+    user_uuid = serializers.UUIDField(source="user_id", read_only=True)
+    project = serializers.UUIDField(source="project_id", read_only=True, allow_null=True)
+    job_title = serializers.UUIDField(source="job_title_id", read_only=True, allow_null=True)
+    task = serializers.UUIDField(source="task_id", read_only=True, allow_null=True)
+    date = serializers.SerializerMethodField()
+    end_date = serializers.SerializerMethodField()
+    start_time = serializers.SerializerMethodField()
+    end_time = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TimeEntry
+        fields = [
+            "id",
+            "user",
+            "user_uuid",
+            "project",
+            "job_title",
+            "task",
+            "description",
+            "date",
+            "end_date",
+            "start_time",
+            "end_time",
+            "billable",
+            "meals",
+            "hotels",
+        ]
+
+    def get_user(self, obj):
+        full_name = obj.user.get_full_name().strip()
+        return full_name or obj.user.username or obj.user.email or str(obj.user_id)
+
+    def _local_dt(self, dt):
+        if dt is None:
+            return None
+        if timezone.is_aware(dt):
+            return timezone.localtime(dt)
+        return dt
+
+    def get_date(self, obj):
+        dt = self._local_dt(obj.start_time)
+        return dt.date().isoformat() if dt else None
+
+    def get_end_date(self, obj):
+        dt = self._local_dt(obj.end_time)
+        return dt.date().isoformat() if dt else None
+
+    def get_start_time(self, obj):
+        dt = self._local_dt(obj.start_time)
+        if not dt:
+            return None
+        return dt.time().replace(second=0, microsecond=0, tzinfo=None).strftime("%H:%M")
+
+    def get_end_time(self, obj):
+        dt = self._local_dt(obj.end_time)
+        if not dt:
+            return None
+        return dt.time().replace(second=0, microsecond=0, tzinfo=None).strftime("%H:%M")

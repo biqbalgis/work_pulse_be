@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceUser
 from .models import TimeEntryApproval, TimeEntryApprovalItem
 from .serializers import TimeEntryApprovalSerializer, TimeEntryApprovalItemSerializer
@@ -13,9 +14,26 @@ from .utils import can_approve, calculate_rt_ot_and_cost
 
 
 class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
-    queryset = TimeEntryApproval.objects.filter(is_deleted=False)
     serializer_class = TimeEntryApprovalSerializer
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = TimeEntryApproval.objects.filter(is_deleted=False).select_related("user", "workspace")
+
+        if not user.is_superuser:
+            workspace_ids = WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
+            queryset = queryset.filter(workspace_id__in=workspace_ids)
+
+        workspace_id = self.request.query_params.get("workspace")
+        if workspace_id:
+            queryset = queryset.filter(workspace_id=workspace_id)
+
+        approval_status = self.request.query_params.get("status")
+        if approval_status:
+            queryset = queryset.filter(status=approval_status)
+
+        return queryset
 
     # ========== EMPLOYEE SUBMITS WEEK ==========
     def list(self, request, *args, **kwargs):
@@ -224,7 +242,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
             date = entry.start_time.date()
             project = entry.project
 
-            hours = Decimal(entry.duration) / Decimal(60)
+            hours = round(Decimal(entry.duration) / Decimal(60), 2)
             rt_limit = Decimal(project.default_rt_hours)
             ot_multiplier = Decimal(project.ot_multiplier)
 
@@ -252,11 +270,11 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
             project_list = []
             for name, data in projects.items():
                 project_list.append({
-                    "project": name,
-                    "hours_total": float(data["total"]),
-                    "rt_hours": float(data["rt"]),
-                    "ot_hours": float(data["ot"]),
-                    "cost": float(data["cost"])
+                    "project":     name,
+                    "hours_total": round(float(data["total"]), 2),
+                    "rt_hours":    round(float(data["rt"]),    2),
+                    "ot_hours":    round(float(data["ot"]),    2),
+                    "cost":        round(float(data["cost"]),  2),
                 })
             formatted_days.append({"date": str(date), "projects": project_list})
 

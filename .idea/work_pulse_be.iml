@@ -15,6 +15,18 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/reports/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/approvals/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/clients/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/core/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/organization_asset/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/projects/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/tags/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/tasks/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/time_entries/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/time_off/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/users/migrations" />
+      <excludeFolder url="file://$MODULE_DIR$/workspaces/migrations" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.13 (work_pulse_be)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

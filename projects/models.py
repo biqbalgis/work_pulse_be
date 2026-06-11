@@ -11,14 +11,27 @@ class Project(SoftDeleteModel):
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True)
     name = models.CharField(max_length=255)
+    job_code = models.CharField(max_length=20, blank=True, null=True)
     color = models.CharField(max_length=7, null=True, blank=True)
     default_rt_hours = models.DecimalField(max_digits=5, decimal_places=2, default=8, null=True, blank=True)
     client_hours_rate = models.DecimalField(max_digits=8, decimal_places=4,null=True, blank=True)
     ot_multiplier = models.DecimalField(max_digits=5, decimal_places=2, default=2)  # default double rate
+    pm_info = models.JSONField(default=dict, blank=True, null=True)
     is_active = models.BooleanField(default=True)
     billable = models.BooleanField(default=False)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_projects')
     created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        unique_together = [('workspace', 'job_code')]
+        ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        # Auto-assign job_code only on creation if not provided
+        if not self.pk and not self.job_code:
+            from .utils import get_next_job_code
+            self.job_code = get_next_job_code(self.workspace)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.name
 
@@ -55,6 +68,37 @@ class UserProjectRole(SoftDeleteModel):
 
     def __str__(self):
         return f"{self.user.email} → {self.job_title.name} @ {self.project.name}"
+
+
+class RoleTemplate(SoftDeleteModel):
+    """
+    A named template that groups multiple users under a single job title.
+    Used to quickly re-apply the same crew+role combination across projects.
+    """
+    id          = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    template_name = models.CharField(max_length=255)
+    job_title   = models.ForeignKey(JobTitle, on_delete=models.CASCADE, related_name='role_templates')
+    hourly_rate = models.DecimalField(max_digits=10, decimal_places=2)
+    created_by  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_role_templates')
+    updated_by  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='updated_role_templates')
+    created_at  = models.DateTimeField(auto_now_add=True)
+    updated_at  = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.template_name} ({self.job_title.name})"
+
+
+class RoleTemplateUser(SoftDeleteModel):
+    """Each row links one user to a RoleTemplate."""
+    id       = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    template = models.ForeignKey(RoleTemplate, on_delete=models.CASCADE, related_name='template_users')
+    user     = models.ForeignKey(User, on_delete=models.CASCADE, related_name='role_template_entries')
+
+    class Meta:
+        unique_together = ('template', 'user')
+
+    def __str__(self):
+        return f"{self.template.template_name} → {self.user}"
 
 
 class LaborRate(SoftDeleteModel):

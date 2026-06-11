@@ -21,8 +21,20 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
         user = self.request.user
         if user.is_superuser:
-            return base_queryset
-        return base_queryset.filter(members__user=user)
+            qs = base_queryset
+        else:
+            qs = base_queryset.filter(members__user=user)
+
+        # Optional filters
+        name = self.request.query_params.get('name')
+        if name:
+            qs = qs.filter(name__icontains=name)
+
+        address = self.request.query_params.get('address')
+        if address:
+            qs = qs.filter(address__icontains=address)
+
+        return qs
 
     def perform_create(self, serializer):
         user = self.request.user
