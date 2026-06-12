@@ -20,7 +20,7 @@ class AssetUsageOutputSerializer(serializers.ModelSerializer):
 
 class AssetUsageInputSerializer(serializers.Serializer):
     asset_id = serializers.UUIDField()
-    quantity_used = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
+    quantity_used = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
 
 class TimeEntrySerializer(serializers.ModelSerializer):
     # Output serializer for GET
