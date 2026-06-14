@@ -70,7 +70,7 @@ def _calculate_standard(approval_items, breakdown):
 
     for item in approval_items:
         entry = item.time_entry
-        date = entry.local_date or entry.start_time.date()
+        date = entry.start_time.date()
         project = entry.project
         hours = round(Decimal(entry.duration) / Decimal(60), 2)
         key = (date, project.id)
@@ -128,7 +128,7 @@ def _calculate_no_policy(approval_items, breakdown):
 
     for item in approval_items:
         entry = item.time_entry
-        date = entry.local_date or entry.start_time.date()
+        date = entry.start_time.date()
         project = entry.project
         hours = round(Decimal(entry.duration) / Decimal(60), 2)
 
@@ -193,7 +193,7 @@ def _calculate_envision(approval_items, breakdown):
 
     for item in items:
         entry = item.time_entry
-        date = entry.local_date or entry.start_time.date()
+        date = entry.start_time.date()
         project = entry.project
         hours = round(Decimal(entry.duration) / Decimal(60), 2)
 
