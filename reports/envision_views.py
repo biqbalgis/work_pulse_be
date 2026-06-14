@@ -75,8 +75,8 @@ class EnvisionLEMReportView(APIView):
         # ── Pull workspace-level info from DB ─────────────────────────────────
         workspace     = project.workspace
         pm_info       = project.pm_info or {}
-        pm_name       = pm_info.get("pm_name", "")
-        pm_contact    = pm_info.get("contact", "")
+        pm_name       = pm_info.get("name", "")
+        pm_contact    = pm_info.get("email", "")
         pm_phone      = pm_info.get("phone", "")
         address_lines = _address_to_lines(workspace.address or "")
 
