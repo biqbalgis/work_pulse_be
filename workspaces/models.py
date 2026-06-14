@@ -8,7 +8,7 @@ import uuid
 class Workspace(SoftDeleteModel):
     OVERTIME_POLICY_CHOICES = (
         ('standard', 'Standard (per-project daily RT/OT table, e.g. Stamsh)'),
-        ('envision', 'EnvisionGeo (8h/day Mon-Fri, 4h Sat, 44h weekly cap, OT @ 1.5x)'),
+        ('envision', 'EnvisionGeo (8h/day every day, 44h weekly cap Sun-Sat, OT @ 1.5x)'),
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
