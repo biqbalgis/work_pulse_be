@@ -184,8 +184,34 @@ class EnvisionLEMReportView(APIView):
             or (". ".join(desc_parts) + "." if desc_parts else "N/A")
         )
 
-        # ── Generate Field Ticket number (workspace-wide sequence) ────────────
+        # ── Check for existing FT LEM (same project + task + date) ──────────────
         FT_DB_PREFIX = "FT-"
+        existing = (
+            LEMReport.objects
+            .filter(
+                project=project,
+                task=task,
+                lem_date=report_date,
+                lem_number__startswith=FT_DB_PREFIX,
+            )
+            .first()
+        )
+        if existing:
+            # Re-generate PDF from stored data and return with the original LEM number
+            ft_display_number = existing.lem_number.replace(FT_DB_PREFIX, "")
+            try:
+                pdf_buffer = generate_envision_lem_pdf(existing.report_data)
+            except Exception as exc:
+                return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
+
+            return FileResponse(
+                pdf_buffer,
+                as_attachment=True,
+                filename=f"Envision_LEM_{ft_display_number}_{date_str}.pdf",
+                content_type="application/pdf",
+            )
+
+        # ── Generate new Field Ticket number (workspace-wide sequence) ────────
         last_ft = (
             LEMReport.objects
             .filter(project__workspace=workspace, lem_number__startswith=FT_DB_PREFIX)
@@ -206,6 +232,8 @@ class EnvisionLEMReportView(APIView):
         lem_report = LEMReport(
             requester=request.user,
             project=project,
+            task=task,
+            lem_date=report_date,
             report_data={},
         )
         lem_report.lem_number = ft_db_number

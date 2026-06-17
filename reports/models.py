@@ -6,10 +6,12 @@ User = get_user_model()
 
 class LEMReport(models.Model):
     lem_number = models.CharField(max_length=20, editable=False)
-    requester = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
-    project = models.ForeignKey("projects.Project", on_delete=models.SET_NULL, null=True, blank=True)
+    requester  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    project    = models.ForeignKey("projects.Project", on_delete=models.SET_NULL, null=True, blank=True)
+    task       = models.ForeignKey("tasks.Task", on_delete=models.SET_NULL, null=True, blank=True)
+    lem_date   = models.DateField(null=True, blank=True)
     report_data = models.JSONField(default=dict)
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at  = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         unique_together = [['project', 'lem_number']]

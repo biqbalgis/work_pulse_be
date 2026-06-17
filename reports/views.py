@@ -763,7 +763,8 @@ class DailyWorkReportView(APIView):
         lem_report = LEMReport.objects.create(
             requester=request.user,
             project=project_obj,
-            report_data={} # Temporary
+            lem_date=start_date,
+            report_data={},
         )
 
         response_data = {
@@ -807,7 +808,8 @@ class LEMReportGenerationView(APIView):
 
         lem_report = LEMReport.objects.create(
             requester=request.user,
-            project=project
+            project=project,
+            lem_date=start_date,
         )
 
         daily_reports = []
@@ -966,7 +968,8 @@ class LEMDailyReportView(APIView):
         # Create LEM Report to auto-generate sequential number
         lem_report = LEMReport.objects.create(
             requester=request.user,
-            project=project
+            project=project,
+            lem_date=report_date,
         )
 
         if sign and not sign_name:
@@ -1081,7 +1084,8 @@ class LEMCostingReportView(APIView):
         # Create LEM Report to auto-generate sequential number
         lem_report = LEMReport.objects.create(
             requester=request.user,
-            project=project
+            project=project,
+            lem_date=report_date,
         )
 
         if sign and not sign_name:
