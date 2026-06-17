@@ -753,19 +753,28 @@ class DailyWorkReportView(APIView):
                 "cost_summary": cost_summary
             }
 
-        # Create LEM Report
+        # Create LEM Report (or reuse existing for same project + date)
         from .models import LEMReport
-        
+
         project_obj = None
         if project_id:
             project_obj = Project.objects.filter(id=project_id).first()
 
-        lem_report = LEMReport.objects.create(
-            requester=request.user,
+        existing_lem = LEMReport.objects.filter(
             project=project_obj,
             lem_date=start_date,
-            report_data={},
-        )
+            lem_number__startswith="LEM-",
+        ).first() if project_obj else None
+
+        if existing_lem:
+            lem_report = existing_lem
+        else:
+            lem_report = LEMReport.objects.create(
+                requester=request.user,
+                project=project_obj,
+                lem_date=start_date,
+                report_data={},
+            )
 
         response_data = {
             "lem_number": lem_report.lem_number,
@@ -806,11 +815,20 @@ class LEMReportGenerationView(APIView):
         except Project.DoesNotExist:
              return Response({"error": "Project not found"}, status=404)
 
-        lem_report = LEMReport.objects.create(
-            requester=request.user,
+        existing_lem = LEMReport.objects.filter(
             project=project,
             lem_date=start_date,
-        )
+            lem_number__startswith="LEM-",
+        ).first()
+
+        if existing_lem:
+            lem_report = existing_lem
+        else:
+            lem_report = LEMReport.objects.create(
+                requester=request.user,
+                project=project,
+                lem_date=start_date,
+            )
 
         daily_reports = []
         current_date = start_date
@@ -965,12 +983,21 @@ class LEMDailyReportView(APIView):
                 "extras": ", ".join(extras)
             })
 
-        # Create LEM Report to auto-generate sequential number
-        lem_report = LEMReport.objects.create(
-            requester=request.user,
+        # Reuse existing LEM for same project + date, or create new
+        existing_lem = LEMReport.objects.filter(
             project=project,
             lem_date=report_date,
-        )
+            lem_number__startswith="LEM-",
+        ).first()
+
+        if existing_lem:
+            lem_report = existing_lem
+        else:
+            lem_report = LEMReport.objects.create(
+                requester=request.user,
+                project=project,
+                lem_date=report_date,
+            )
 
         if sign and not sign_name:
             sign_name = f"{request.user.first_name} {request.user.last_name}".strip()
@@ -1081,12 +1108,21 @@ class LEMCostingReportView(APIView):
                     "total_cost":       round(float(data["cost"]),            2),
                 })
 
-        # Create LEM Report to auto-generate sequential number
-        lem_report = LEMReport.objects.create(
-            requester=request.user,
+        # Reuse existing LEM for same project + date, or create new
+        existing_lem = LEMReport.objects.filter(
             project=project,
             lem_date=report_date,
-        )
+            lem_number__startswith="LEM-",
+        ).first()
+
+        if existing_lem:
+            lem_report = existing_lem
+        else:
+            lem_report = LEMReport.objects.create(
+                requester=request.user,
+                project=project,
+                lem_date=report_date,
+            )
 
         if sign and not sign_name:
             sign_name = f"{request.user.first_name} {request.user.last_name}".strip()
