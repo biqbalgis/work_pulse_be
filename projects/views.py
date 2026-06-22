@@ -2,7 +2,7 @@ from rest_framework.response import Response
 from rest_framework import viewsets, permissions, serializers,status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
-from django.db import transaction
+from django.db import transaction, IntegrityError
 
 from .models import Project, ProjectRole, UserProjectRole, JobTitle, RoleTemplate, RoleTemplateUser
 from .utils import get_next_job_code
@@ -178,14 +178,23 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         if job_title:
             return job_title, False
 
-        return JobTitle.objects.create(name=job_title_name), True
+        try:
+            return JobTitle.objects.create(name=job_title_name), True
+        except IntegrityError:
+            return JobTitle.objects.filter(name__iexact=job_title_name).first(), False
 
     def _get_or_create_project_role(self, project, job_title, hourly_rate):
-        project_role, created = ProjectRole.objects.get_or_create(
-            project=project,
-            job_title=job_title,
-            defaults={"hourly_rate": hourly_rate}
-        )
+        try:
+            project_role, created = ProjectRole.objects.get_or_create(
+                project=project,
+                job_title=job_title,
+                defaults={"hourly_rate": hourly_rate}
+            )
+        except IntegrityError:
+            # Race condition: another request created the role between our GET and CREATE.
+            # Fall back to a plain get — the row now exists.
+            project_role = ProjectRole.objects.get(project=project, job_title=job_title)
+            created = False
 
         if not created and project_role.hourly_rate != hourly_rate:
             project_role.hourly_rate = hourly_rate
