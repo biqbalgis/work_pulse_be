@@ -185,14 +185,17 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
 
     def _get_or_create_project_role(self, project, job_title, hourly_rate):
         try:
-            project_role, created = ProjectRole.objects.get_or_create(
-                project=project,
-                job_title=job_title,
-                defaults={"hourly_rate": hourly_rate}
-            )
+            # Wrap in its own savepoint so an IntegrityError only rolls back
+            # this inner block, not the outer transaction.atomic() in the caller.
+            with transaction.atomic():
+                project_role, created = ProjectRole.objects.get_or_create(
+                    project=project,
+                    job_title=job_title,
+                    defaults={"hourly_rate": hourly_rate}
+                )
         except IntegrityError:
-            # Race condition: another request created the role between our GET and CREATE.
-            # Fall back to a plain get — the row now exists.
+            # Race condition: row was inserted by a concurrent request between
+            # our GET and CREATE. The savepoint rolled back; now fetch the row.
             project_role = ProjectRole.objects.get(project=project, job_title=job_title)
             created = False
 
