@@ -174,76 +174,29 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         return project
 
     def _get_or_create_job_title(self, job_title_name):
-        # Check live records first
+        # iexact match doesn't map cleanly to get_or_restore's exact lookup,
+        # so handle the live + soft-deleted checks manually then delegate creation.
         job_title = JobTitle.objects.filter(name__iexact=job_title_name).first()
         if job_title:
             return job_title, False
-
-        # Check soft-deleted records — restore instead of re-creating to avoid
-        # hitting the unique constraint on name.
-        soft_deleted = JobTitle.all_objects.filter(
-            name__iexact=job_title_name, is_deleted=True
-        ).first()
-        if soft_deleted:
-            soft_deleted.is_deleted = False
-            soft_deleted.deleted_at = None
-            soft_deleted.save(update_fields=["is_deleted", "deleted_at"])
-            return soft_deleted, True
-
-        try:
-            with transaction.atomic():
-                return JobTitle.objects.create(name=job_title_name), True
-        except IntegrityError:
-            # Race condition — another request just created it.
-            return JobTitle.objects.filter(name__iexact=job_title_name).first(), False
+        return JobTitle.objects.get_or_restore(defaults={"name": job_title_name})
 
     def _get_or_create_project_role(self, project, job_title, hourly_rate):
-        # Check live records first
-        project_role = ProjectRole.objects.filter(
-            project=project, job_title=job_title
-        ).first()
-        if project_role:
-            if project_role.hourly_rate != hourly_rate:
-                project_role.hourly_rate = hourly_rate
-                project_role.save(update_fields=["hourly_rate"])
-            return project_role, False
+        return ProjectRole.objects.get_or_restore(
+            project=project,
+            job_title=job_title,
+            defaults={"hourly_rate": hourly_rate},
+            update_existing={"hourly_rate": hourly_rate},
+        )
 
-        # Check soft-deleted records — restore instead of re-creating to avoid
-        # hitting the unique_together constraint (project, job_title).
-        soft_deleted = ProjectRole.all_objects.filter(
-            project=project, job_title=job_title, is_deleted=True
-        ).first()
-        if soft_deleted:
-            soft_deleted.is_deleted = False
-            soft_deleted.deleted_at = None
-            soft_deleted.hourly_rate = hourly_rate
-            soft_deleted.save(update_fields=["is_deleted", "deleted_at", "hourly_rate"])
-            return soft_deleted, True
-
-        # Neither live nor soft-deleted — create fresh (with savepoint for race safety).
-        try:
-            with transaction.atomic():
-                project_role, created = ProjectRole.objects.get_or_create(
-                    project=project,
-                    job_title=job_title,
-                    defaults={"hourly_rate": hourly_rate}
-                )
-        except IntegrityError:
-            # Race condition: a concurrent request just created a live record.
-            project_role = ProjectRole.objects.filter(
-                project=project, job_title=job_title
-            ).first()
-            if project_role:
-                return project_role, False
-            raise ValidationError({
-                "job_title": f"A role for '{job_title.name}' already exists in this project."
-            })
-
-        if not created and project_role.hourly_rate != hourly_rate:
-            project_role.hourly_rate = hourly_rate
-            project_role.save(update_fields=["hourly_rate"])
-
-        return project_role, created
+    def _get_or_create_user_project_role(self, project, user_id, job_title, hourly_rate):
+        return UserProjectRole.objects.get_or_restore(
+            project=project,
+            user_id=user_id,
+            job_title=job_title,
+            defaults={"hourly_rate": hourly_rate},
+            update_existing={"hourly_rate": hourly_rate},
+        )
 
     def _validate_project_users(self, project, requested_user_ids):
         existing_user_ids = set(User.objects.filter(id__in=requested_user_ids).values_list("id", flat=True))
@@ -323,11 +276,11 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
             assigned_users = []
             created_any = job_title_created or project_role_created
             for user_id in user_ids:
-                user_project_role, user_role_created = UserProjectRole.objects.update_or_create(
+                user_project_role, user_role_created = self._get_or_create_user_project_role(
                     project=project,
                     user_id=user_id,
                     job_title=job_title,
-                    defaults={"hourly_rate": hourly_rate}
+                    hourly_rate=hourly_rate,
                 )
 
                 log_activity(
