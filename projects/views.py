@@ -174,19 +174,54 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         return project
 
     def _get_or_create_job_title(self, job_title_name):
+        # Check live records first
         job_title = JobTitle.objects.filter(name__iexact=job_title_name).first()
         if job_title:
             return job_title, False
 
+        # Check soft-deleted records — restore instead of re-creating to avoid
+        # hitting the unique constraint on name.
+        soft_deleted = JobTitle.all_objects.filter(
+            name__iexact=job_title_name, is_deleted=True
+        ).first()
+        if soft_deleted:
+            soft_deleted.is_deleted = False
+            soft_deleted.deleted_at = None
+            soft_deleted.save(update_fields=["is_deleted", "deleted_at"])
+            return soft_deleted, True
+
         try:
-            return JobTitle.objects.create(name=job_title_name), True
+            with transaction.atomic():
+                return JobTitle.objects.create(name=job_title_name), True
         except IntegrityError:
+            # Race condition — another request just created it.
             return JobTitle.objects.filter(name__iexact=job_title_name).first(), False
 
     def _get_or_create_project_role(self, project, job_title, hourly_rate):
+        # Check live records first
+        project_role = ProjectRole.objects.filter(
+            project=project, job_title=job_title
+        ).first()
+        if project_role:
+            if project_role.hourly_rate != hourly_rate:
+                project_role.hourly_rate = hourly_rate
+                project_role.save(update_fields=["hourly_rate"])
+            return project_role, False
+
+        # Check soft-deleted records — restore instead of re-creating to avoid
+        # hitting the unique_together constraint (project, job_title).
+        soft_deleted = ProjectRole.all_objects.filter(
+            project=project, job_title=job_title, is_deleted=True
+        ).first()
+        if soft_deleted:
+            soft_deleted.is_deleted = False
+            soft_deleted.deleted_at = None
+            soft_deleted.hourly_rate = hourly_rate
+            soft_deleted.save(update_fields=["is_deleted", "deleted_at", "hourly_rate"])
+            return soft_deleted, True
+
+        # Neither live nor soft-deleted — create fresh (with savepoint for race safety).
         try:
-            # Wrap in its own savepoint so an IntegrityError only rolls back
-            # this inner block, not the outer transaction.atomic() in the caller.
             with transaction.atomic():
                 project_role, created = ProjectRole.objects.get_or_create(
                     project=project,
@@ -194,10 +229,15 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
                     defaults={"hourly_rate": hourly_rate}
                 )
         except IntegrityError:
-            # Race condition: row was inserted by a concurrent request between
-            # our GET and CREATE. The savepoint rolled back; now fetch the row.
-            project_role = ProjectRole.objects.get(project=project, job_title=job_title)
-            created = False
+            # Race condition: a concurrent request just created a live record.
+            project_role = ProjectRole.objects.filter(
+                project=project, job_title=job_title
+            ).first()
+            if project_role:
+                return project_role, False
+            raise ValidationError({
+                "job_title": f"A role for '{job_title.name}' already exists in this project."
+            })
 
         if not created and project_role.hourly_rate != hourly_rate:
             project_role.hourly_rate = hourly_rate
