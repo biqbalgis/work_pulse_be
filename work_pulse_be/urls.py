@@ -47,4 +47,7 @@ urlpatterns = [
 
     # Envision GEO Reports
     path("api/reports/envision/", include("reports.envision_urls")),
+
+    # User Permissions
+    path("api/", include("user_permissions.urls")),
 ]

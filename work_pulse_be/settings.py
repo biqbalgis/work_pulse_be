@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'tags',
     'organization_asset',
     'reports',
+    'user_permissions',
     'corsheaders',
 
 ]
