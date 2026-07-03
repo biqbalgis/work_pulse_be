@@ -1,8 +1,11 @@
 """
-Envision GEO — Field Ticket LEM Report API Views
-POST /api/reports/envision/fieldTicket_Lem/
+Envision GEO — LEM Report API Views
+  POST /api/reports/envision/fieldTicket_Lem/   — Field Ticket LEM PDF
+  POST /api/reports/envision/costing-lem/        — Costing LEM PDF
+  GET  /api/reports/envision/lem/search/         — Search Field Ticket LEM by number
 """
 
+from collections import OrderedDict
 from datetime import datetime
 from decimal import Decimal
 
@@ -17,6 +20,7 @@ from time_entries.models import TimeEntry
 from workspaces.permissions import IsWorkspaceUser
 from .models import LEMReport
 from .envision_pdf_utils import generate_envision_lem_pdf
+from .envision_costing_pdf_utils import generate_envision_costing_pdf
 
 
 def _address_to_lines(address: str) -> list:
@@ -283,44 +287,319 @@ class EnvisionLEMReportView(APIView):
         )
 
 
-def _resolve_lem_number(query: str) -> str:
-    """
-    Smart LEM number resolver:
-      - Pure digits (e.g. "000001") → "FT-000001"  (field ticket)
-      - Anything else (e.g. "LEM-001") → unchanged  (standard LEM)
-    """
-    return f"FT-{query.strip()}" if query.strip().isdigit() else query.strip()
-
 
 class EnvisionLEMSearchView(APIView):
     """
-    Look up a saved LEM report by number.
+    Look up a saved Envision Field Ticket LEM by number.
+    Accepts the display number (digits only) or the full FT- prefixed form.
+
     GET /api/reports/envision/lem/search/?lem_number=000001
-    GET /api/reports/envision/lem/search/?lem_number=LEM-001
+    GET /api/reports/envision/lem/search/?lem_number=FT-000001
     """
 
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    FT_PREFIX = "FT-"
 
     def get(self, request):
         raw = request.query_params.get("lem_number", "").strip()
         if not raw:
             return Response({"error": "lem_number query parameter is required"}, status=400)
 
-        db_key = _resolve_lem_number(raw)
+        # Normalise: strip FT- prefix if caller included it, then re-add
+        digits = raw.replace(self.FT_PREFIX, "").strip()
+        db_key = f"{self.FT_PREFIX}{digits}"
 
         try:
             report = LEMReport.objects.get(lem_number=db_key)
         except LEMReport.DoesNotExist:
             return Response(
-                {"error": f"No LEM report found for '{raw}' (looked up as '{db_key}')"},
+                {"error": f"No Field Ticket LEM found for number '{digits}'"},
                 status=404,
             )
 
         return Response({
-            "lem_number":  raw,
-            "db_key":      db_key,
+            "lem_number":  digits,
             "report_data": report.report_data,
             "created_at":  report.created_at,
             "project":     str(report.project_id) if report.project else None,
+            "task":        str(report.task_id) if report.task else None,
+            "lem_date":    str(report.lem_date) if report.lem_date else None,
             "requester":   report.requester.get_full_name() if report.requester else None,
         })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Costing LEM
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _fmt_money(v):
+    """Return a clean number string — int if whole, 2dp otherwise."""
+    try:
+        f = float(str(v or 0).replace(",", ""))
+        return str(int(f)) if f == int(f) else f"{f:,.2f}"
+    except (ValueError, TypeError):
+        return str(v or "0")
+
+
+class EnvisionCostingLEMView(APIView):
+    """
+    Generate and download an Envision GEO Costing LEM PDF.
+
+    Required body params:
+        project_id  (uuid)  — project to report on
+        date_from   (str)   — start date, YYYY-MM-DD
+        date_to     (str)   — end date,   YYYY-MM-DD
+
+    Optional body params:
+        task_id     (uuid)  — filter to a specific task within the project
+        client_rep  (str)
+        sign        (bool)
+        sign_name   (str)
+        sign_date   (str)   — YYYY-MM-DD
+
+    LEM prefix: CT- (Costing Ticket), workspace-wide sequential.
+    Duplicate guard: same project + task + date_from → returns existing PDF.
+    """
+
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    CT_PREFIX = "CT-"
+
+    def post(self, request):
+        data = request.data
+
+        # ── Required params ───────────────────────────────────────────────────
+        project_id = data.get("project_id")
+        task_id    = data.get("task_id")
+        from_str   = data.get("date_from")
+        to_str     = data.get("date_to")
+
+        if not all([project_id, from_str, to_str]):
+            return Response(
+                {"error": "project_id, date_from and date_to are required"},
+                status=400,
+            )
+
+        try:
+            date_from = datetime.strptime(from_str, "%Y-%m-%d").date()
+            date_to   = datetime.strptime(to_str,   "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+
+        if date_to < date_from:
+            return Response({"error": "date_to must be on or after date_from"}, status=400)
+
+        # ── Fetch project ─────────────────────────────────────────────────────
+        try:
+            project = Project.objects.select_related("client", "workspace").get(id=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found"}, status=404)
+
+        workspace = project.workspace
+
+        # ── Fetch task (optional) ─────────────────────────────────────────────
+        task = None
+        if task_id:
+            try:
+                task = Task.objects.get(id=task_id, project=project)
+            except Task.DoesNotExist:
+                return Response({"error": "Task not found for this project"}, status=404)
+
+        # ── Duplicate check ───────────────────────────────────────────────────
+        existing = (
+            LEMReport.objects
+            .filter(
+                project=project,
+                task=task,
+                lem_date=date_from,
+                lem_number__startswith=self.CT_PREFIX,
+            )
+            .first()
+        )
+        if existing:
+            ct_display = existing.lem_number.replace(self.CT_PREFIX, "")
+            try:
+                pdf_buffer = generate_envision_costing_pdf(existing.report_data)
+            except Exception as exc:
+                return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
+            return FileResponse(
+                pdf_buffer,
+                as_attachment=True,
+                filename=f"Envision_Costing_LEM_{ct_display}_{from_str}.pdf",
+                content_type="application/pdf",
+            )
+
+        # ── Build address / PM info ───────────────────────────────────────────
+        pm_info       = project.pm_info or {}
+        pm_name       = pm_info.get("name", "")
+        pm_contact    = pm_info.get("email", "")
+        pm_phone      = pm_info.get("phone", "")
+        address_lines = _address_to_lines(workspace.address or "")
+
+        # ── Fetch time entries ────────────────────────────────────────────────
+        entries_qs = (
+            TimeEntry.objects
+            .filter(
+                project_id=project_id,
+                start_time__date__gte=date_from,
+                start_time__date__lte=date_to,
+            )
+            .select_related("user", "job_title")
+            .prefetch_related("asset_usages__asset")
+            .order_by("user__first_name", "user__last_name", "job_title__name", "start_time")
+        )
+        if task_id:
+            entries_qs = entries_qs.filter(task_id=task_id)
+
+        if not entries_qs.exists():
+            return Response(
+                {"error": "No time entries found for the given project and date range."},
+                status=404,
+            )
+
+        # ── Build labour groups (keyed by user + job_title) ───────────────────
+        labour_map   = OrderedDict()
+        grand_total  = Decimal("0")
+
+        for entry in entries_qs:
+            key        = (entry.user_id, getattr(entry.job_title, "id", None))
+            emp_name   = entry.user.get_full_name() or entry.user.email
+            jt_name    = entry.job_title.name if entry.job_title else "—"
+            hours      = Decimal(entry.duration or 0) / 60
+            rate       = Decimal(entry.hourly_rate or 0)
+            line_total = round(hours * rate, 2)
+
+            if key not in labour_map:
+                labour_map[key] = {
+                    "employee":  emp_name,
+                    "job_title": jt_name,
+                    "entries":   [],
+                    "subtotal":  Decimal("0"),
+                }
+
+            labour_map[key]["entries"].append({
+                "date":        entry.start_time.strftime("%b %d, %Y"),
+                "description": (entry.description or "").strip(),
+                "hours":       _fmt_money(round(hours, 2)),
+                "rate":        _fmt_money(rate),
+                "total":       _fmt_money(line_total),
+            })
+            labour_map[key]["subtotal"] += line_total
+            grand_total += line_total
+
+        labour_groups = []
+        for grp in labour_map.values():
+            labour_groups.append({
+                "employee":  grp["employee"],
+                "job_title": grp["job_title"],
+                "entries":   grp["entries"],
+                "subtotal":  _fmt_money(grp["subtotal"]),
+            })
+
+        # ── Build asset rows ──────────────────────────────────────────────────
+        asset_rows  = []
+        asset_total = Decimal("0")
+
+        for entry in entries_qs:
+            for usage in entry.asset_usages.all():
+                asset      = usage.asset
+                cost       = Decimal(usage.cost or 0)
+                asset_total += cost
+
+                if asset.charge_type == "hourly":
+                    hrs_units = _fmt_money(round(Decimal(entry.duration or 0) / 60, 2))
+                    rate_val  = _fmt_money(Decimal(asset.hourly_rate or 0))
+                else:
+                    hrs_units = _fmt_money(Decimal(usage.quantity_used or 0))
+                    rate_val  = _fmt_money(Decimal(asset.quantity_rate or 0))
+
+                asset_rows.append({
+                    "name":       asset.name,
+                    "date":       entry.start_time.strftime("%b %d, %Y"),
+                    "hours_units": hrs_units,
+                    "rate":       rate_val,
+                    "total":      _fmt_money(cost),
+                })
+
+        grand_total += asset_total
+
+        # ── LEM number (CT- sequential per workspace) ─────────────────────────
+        last_ct = (
+            LEMReport.objects
+            .filter(project__workspace=workspace, lem_number__startswith=self.CT_PREFIX)
+            .order_by("-id")
+            .first()
+        )
+        last_num = 0
+        if last_ct:
+            try:
+                last_num = int(last_ct.lem_number.replace(self.CT_PREFIX, ""))
+            except ValueError:
+                last_num = 0
+
+        ct_db_number  = f"{self.CT_PREFIX}{last_num + 1:06d}"
+        ct_display    = f"{last_num + 1:06d}"
+
+        # ── Date range label ──────────────────────────────────────────────────
+        if date_from == date_to:
+            date_label = date_from.strftime("%b %d, %Y")
+        else:
+            date_label = "{} – {}".format(
+                date_from.strftime("%b %d, %Y"),
+                date_to.strftime("%b %d, %Y"),
+            )
+
+        # ── Signature fields ──────────────────────────────────────────────────
+        sign      = data.get("sign", False)
+        sign_name = data.get("sign_name") or request.user.get_full_name()
+        sign_date = data.get("sign_date") or to_str
+
+        pdf_data = {
+            "lem_number":      ct_display,
+            "lem_date":        date_label,
+            "company_address": address_lines,
+            "project_name":    project.name,
+            "task_name":       task.name if task else "",
+            "job_number":      project.job_code or "",
+            "client":          project.client.name if project.client else "",
+            "pm_name":         pm_name,
+            "pm_contact":      pm_contact,
+            "pm_phone":        pm_phone,
+            "labour_groups":   labour_groups,
+            "asset_rows":      asset_rows,
+            "asset_total":     _fmt_money(asset_total),
+            "grand_total":     _fmt_money(grand_total),
+            "client_rep":      data.get("client_rep", ""),
+            "sign":            sign,
+            "sign_name":       sign_name if sign else "",
+            "sign_date":       sign_date if sign else "",
+        }
+
+        # ── Save LEM record ───────────────────────────────────────────────────
+        lem_report = LEMReport(
+            requester=request.user,
+            project=project,
+            task=task,
+            lem_date=date_from,
+            report_data={},
+        )
+        lem_report.lem_number = ct_db_number
+        lem_report.save()
+
+        lem_report.report_data = pdf_data
+        lem_report.save()
+
+        # ── Generate PDF ──────────────────────────────────────────────────────
+        try:
+            pdf_buffer = generate_envision_costing_pdf(pdf_data)
+        except Exception as exc:
+            lem_report.delete()
+            return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
+
+        return FileResponse(
+            pdf_buffer,
+            as_attachment=True,
+            filename=f"Envision_Costing_LEM_{ct_display}_{from_str}.pdf",
+            content_type="application/pdf",
+        )
