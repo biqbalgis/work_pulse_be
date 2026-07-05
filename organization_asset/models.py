@@ -45,5 +45,6 @@ class AssetUsage(SoftDeleteModel):
 
     def calculate_cost(self, duration_hours):
         if self.asset.charge_type == "hourly":
-            return Decimal(self.asset.hourly_rate) * Decimal(duration_hours)
+            usage_hours = self.quantity_used if self.quantity_used is not None else Decimal(duration_hours)
+            return Decimal(self.asset.hourly_rate) * Decimal(usage_hours)
         return Decimal(self.quantity_used or 0) * Decimal(self.asset.quantity_rate)

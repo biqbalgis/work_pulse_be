@@ -159,25 +159,65 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         entry = self.get_object()
+        old_start_time = entry.start_time
 
         # ❌ Prevent editing if approved (locked)
         if entry.is_locked:
             raise ValidationError("This time entry is approved and cannot be edited.")
 
-        # Save basic time entry fields
+        validated_data = serializer.validated_data
+        project = validated_data.get("project", entry.project)
+        job_title = validated_data.get("job_title", entry.job_title)
+        start_time = validated_data.get("start_time", entry.start_time)
+        end_time = validated_data.get("end_time", entry.end_time)
+
+        if end_time and end_time <= start_time:
+            raise ValidationError("end_time must be after start_time.")
+
+        hourly_rate = entry.hourly_rate
+        cost = entry.cost
+        duration_minutes = entry.duration
+        duration_hours_decimal = Decimal(duration_minutes) / Decimal("60")
+
+        if end_time:
+            duration_seconds = (end_time - start_time).total_seconds()
+            duration_minutes = int(duration_seconds // 60)
+            duration_hours_decimal = Decimal(duration_seconds / 3600).quantize(Decimal("0.01"))
+
+        if project and job_title and end_time:
+            upr = UserProjectRole.objects.filter(
+                user=entry.user, project=project, job_title=job_title
+            ).first()
+            if upr and upr.hourly_rate is not None:
+                hourly_rate = upr.hourly_rate
+            else:
+                project_role = ProjectRole.objects.filter(
+                    project=project, job_title=job_title
+                ).first()
+                if not project_role:
+                    raise ValidationError("This job title is not configured for this project.")
+                hourly_rate = project_role.hourly_rate
+
+            if hourly_rate is None:
+                raise ValidationError("Hourly rate not found.")
+
+            cost = duration_hours_decimal * Decimal(hourly_rate)
+
+        # Save editable fields first, then force derived fields onto the model.
         updated_entry = serializer.save()
+        updated_entry.duration = duration_minutes
+        updated_entry.hourly_rate = hourly_rate
+        updated_entry.cost = cost
+        updated_entry.save(update_fields=["duration", "hourly_rate", "cost"])
 
         # ---- Handle asset update ----
-        assets_data = self.request.data.get("assets", None)
+        assets_data = validated_data.get("asset_inputs", None)
 
         if assets_data is not None:
             from organization_asset.models import OrganizationAsset, AssetUsage
 
             # Delete existing usage to replace with new one
             AssetUsage.objects.filter(time_entry=entry).delete()
-
-            # Recreate asset usage from request
-            duration_hours = entry.duration / 60  # convert minutes to hours
 
             for item in assets_data:
                 asset = OrganizationAsset.objects.get(id=item["asset_id"])
@@ -187,8 +227,51 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
                     asset=asset,
                     quantity_used=item.get("quantity_used")
                 )
-                usage.cost = usage.calculate_cost(duration_hours)
+                usage.cost = usage.calculate_cost(duration_hours_decimal)
                 usage.save()
+
+        old_week = get_week_bounds(old_start_time.date())
+        new_week = get_week_bounds(updated_entry.start_time.date())
+
+        if old_week != new_week:
+            old_approval = (
+                TimeEntryApproval.objects.filter(
+                    user=entry.user,
+                    workspace=entry.workspace,
+                    start_date=old_week[0],
+                    end_date=old_week[1],
+                ).first()
+            )
+            if old_approval:
+                TimeEntryApprovalItem.objects.filter(
+                    approval=old_approval,
+                    time_entry=updated_entry,
+                ).delete()
+                self._sync_approval_after_delete(old_approval)
+
+            new_approval, _ = TimeEntryApproval.objects.get_or_create(
+                workspace=entry.workspace,
+                user=entry.user,
+                start_date=new_week[0],
+                end_date=new_week[1],
+                defaults={
+                    "status": "submitted",
+                    "created_by": entry.user,
+                }
+            )
+            TimeEntryApprovalItem.objects.get_or_create(
+                approval=new_approval,
+                time_entry=updated_entry,
+                defaults={
+                    "approved": True,
+                    "created_by": entry.user,
+                }
+            )
+            self._sync_approval_after_delete(new_approval)
+        else:
+            approval_ids = TimeEntryApprovalItem.objects.filter(time_entry=updated_entry).values_list("approval_id", flat=True)
+            for approval in TimeEntryApproval.objects.filter(id__in=approval_ids):
+                self._sync_approval_after_delete(approval)
 
         return updated_entry
 
