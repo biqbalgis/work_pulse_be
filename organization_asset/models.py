@@ -32,6 +32,15 @@ class OrganizationAsset(SoftDeleteModel):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "name"],
+                condition=models.Q(is_deleted=False),
+                name="unique_active_asset_name_per_project",
+            ),
+        ]
+
     def __str__(self):
         return "{} ({})".format(self.name, self.get_charge_type_display())
 
