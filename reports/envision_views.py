@@ -194,9 +194,15 @@ class EnvisionLEMReportView(APIView):
             or (". ".join(desc_parts) + "." if desc_parts else "N/A")
         )
 
-        # ── Check for existing FT LEM (same project + task + date) ──────────────
+        # ── Signature fields ──────────────────────────────────────────────────
+        user      = request.user
+        sign      = data.get("sign", False)
+        sign_name = data.get("sign_name") or user.get_full_name()
+        sign_date = data.get("sign_date") or date_str
+
+        # ── Reuse the FT LEM number for this project+task+date, or assign a new one ──
         FT_DB_PREFIX = "FT-"
-        existing = (
+        lem_report = (
             LEMReport.objects
             .filter(
                 project=project,
@@ -206,55 +212,32 @@ class EnvisionLEMReportView(APIView):
             )
             .first()
         )
-        if existing:
-            # Re-generate PDF from stored data and return with the original LEM number
-            ft_display_number = existing.lem_number.replace(FT_DB_PREFIX, "")
-            try:
-                pdf_buffer = generate_envision_lem_pdf(existing.report_data)
-            except Exception as exc:
-                return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
-
-            return FileResponse(
-                pdf_buffer,
-                as_attachment=True,
-                filename=f"Envision_LEM_{ft_display_number}_{date_str}.pdf",
-                content_type="application/pdf",
+        is_new = lem_report is None
+        if is_new:
+            last_ft = (
+                LEMReport.objects
+                .filter(project__workspace=workspace, lem_number__startswith=FT_DB_PREFIX)
+                .order_by("-id")
+                .first()
             )
-
-        # ── Generate new Field Ticket number (workspace-wide sequence) ────────
-        last_ft = (
-            LEMReport.objects
-            .filter(project__workspace=workspace, lem_number__startswith=FT_DB_PREFIX)
-            .order_by("-id")
-            .first()
-        )
-        if last_ft:
             try:
-                last_num = int(last_ft.lem_number.replace(FT_DB_PREFIX, ""))
+                last_num = int(last_ft.lem_number.replace(FT_DB_PREFIX, "")) if last_ft else 0
             except ValueError:
                 last_num = 0
-        else:
-            last_num = 0
 
-        ft_db_number      = f"{FT_DB_PREFIX}{last_num + 1:06d}"
-        ft_display_number = f"{last_num + 1:06d}"
+            lem_report = LEMReport(
+                requester=request.user,
+                project=project,
+                task=task,
+                lem_date=report_date,
+                lem_number=f"{FT_DB_PREFIX}{last_num + 1:06d}",
+                report_data={},
+            )
+            lem_report.save()
 
-        lem_report = LEMReport(
-            requester=request.user,
-            project=project,
-            task=task,
-            lem_date=report_date,
-            report_data={},
-        )
-        lem_report.lem_number = ft_db_number
-        lem_report.save()
+        ft_display_number = lem_report.lem_number.replace(FT_DB_PREFIX, "")
 
-        # ── Signature fields ──────────────────────────────────────────────────
-        user      = request.user
-        sign      = data.get("sign", False)
-        sign_name = data.get("sign_name") or user.get_full_name()
-        sign_date = data.get("sign_date") or date_str
-
+        # ── Build PDF data fresh from current time entries every time ────────
         pdf_data = {
             "lem_number":       ft_display_number,
             "lem_date":         date_str,
@@ -282,7 +265,8 @@ class EnvisionLEMReportView(APIView):
         try:
             pdf_buffer = generate_envision_lem_pdf(pdf_data)
         except Exception as exc:
-            lem_report.delete()
+            if is_new:
+                lem_report.delete()
             return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
 
         return FileResponse(
@@ -365,7 +349,8 @@ class EnvisionCostingLEMView(APIView):
         sign_date   (str)   — YYYY-MM-DD
 
     LEM prefix: CT- (Costing Ticket), workspace-wide sequential.
-    Duplicate guard: same project + task + date_from → returns existing PDF.
+    Same project + task + date_from reuses the existing LEM number, but the
+    report content is always rebuilt from current data — never served from cache.
     """
 
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
@@ -411,30 +396,6 @@ class EnvisionCostingLEMView(APIView):
                 task = Task.objects.get(id=task_id, project=project)
             except Task.DoesNotExist:
                 return Response({"error": "Task not found for this project"}, status=404)
-
-        # ── Duplicate check ───────────────────────────────────────────────────
-        existing = (
-            LEMReport.objects
-            .filter(
-                project=project,
-                task=task,
-                lem_date=date_from,
-                lem_number__startswith=self.CT_PREFIX,
-            )
-            .first()
-        )
-        if existing:
-            ct_display = existing.lem_number.replace(self.CT_PREFIX, "")
-            try:
-                pdf_buffer = generate_envision_costing_pdf(existing.report_data)
-            except Exception as exc:
-                return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
-            return FileResponse(
-                pdf_buffer,
-                as_attachment=True,
-                filename=f"Envision_Costing_LEM_{ct_display}_{from_str}.pdf",
-                content_type="application/pdf",
-            )
 
         # ── Build address / PM info ───────────────────────────────────────────
         pm_info       = project.pm_info or {}
@@ -530,22 +491,41 @@ class EnvisionCostingLEMView(APIView):
 
         grand_total += asset_total
 
-        # ── LEM number (CT- sequential per workspace) ─────────────────────────
-        last_ct = (
+        # ── Reuse the CT LEM number for this project+task+date_from, or assign a new one ──
+        lem_report = (
             LEMReport.objects
-            .filter(project__workspace=workspace, lem_number__startswith=self.CT_PREFIX)
-            .order_by("-id")
+            .filter(
+                project=project,
+                task=task,
+                lem_date=date_from,
+                lem_number__startswith=self.CT_PREFIX,
+            )
             .first()
         )
-        last_num = 0
-        if last_ct:
+        is_new = lem_report is None
+        if is_new:
+            last_ct = (
+                LEMReport.objects
+                .filter(project__workspace=workspace, lem_number__startswith=self.CT_PREFIX)
+                .order_by("-id")
+                .first()
+            )
             try:
-                last_num = int(last_ct.lem_number.replace(self.CT_PREFIX, ""))
+                last_num = int(last_ct.lem_number.replace(self.CT_PREFIX, "")) if last_ct else 0
             except ValueError:
                 last_num = 0
 
-        ct_db_number  = f"{self.CT_PREFIX}{last_num + 1:06d}"
-        ct_display    = f"{last_num + 1:06d}"
+            lem_report = LEMReport(
+                requester=request.user,
+                project=project,
+                task=task,
+                lem_date=date_from,
+                lem_number=f"{self.CT_PREFIX}{last_num + 1:06d}",
+                report_data={},
+            )
+            lem_report.save()
+
+        ct_display = lem_report.lem_number.replace(self.CT_PREFIX, "")
 
         # ── Date range label ──────────────────────────────────────────────────
         if date_from == date_to:
@@ -582,17 +562,7 @@ class EnvisionCostingLEMView(APIView):
             "sign_date":       sign_date if sign else "",
         }
 
-        # ── Save LEM record ───────────────────────────────────────────────────
-        lem_report = LEMReport(
-            requester=request.user,
-            project=project,
-            task=task,
-            lem_date=date_from,
-            report_data={},
-        )
-        lem_report.lem_number = ct_db_number
-        lem_report.save()
-
+        # ── Save fresh report data onto the (reused or new) LEM record ────────
         lem_report.report_data = pdf_data
         lem_report.save()
 
@@ -600,7 +570,8 @@ class EnvisionCostingLEMView(APIView):
         try:
             pdf_buffer = generate_envision_costing_pdf(pdf_data)
         except Exception as exc:
-            lem_report.delete()
+            if is_new:
+                lem_report.delete()
             return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
 
         return FileResponse(
