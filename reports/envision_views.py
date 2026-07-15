@@ -161,9 +161,10 @@ class EnvisionLEMReportView(APIView):
                     hrs = (
                         Decimal(usage.quantity_used)
                         if usage.quantity_used is not None
-                        else 0
+                        else Decimal(entry.duration) / 60
                     )
                     asset_map[asset.id]["hours"] += hrs
+                    # asset_map[asset.id]["hours"] = Decimal(entry.duration) / 60
                     asset_map[asset.id]["rate"]   = Decimal(asset.hourly_rate or 0)
                 else:
                     asset_map[asset.id]["units"] += Decimal(usage.quantity_used or 0)
