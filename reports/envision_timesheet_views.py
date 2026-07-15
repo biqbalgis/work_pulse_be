@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 from projects.models import Project
 from tasks.models import Task
 from time_entries.models import TimeEntry
+from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceUser
 
 from .envision_timesheet_utils import generate_envision_timesheet_xlsx
@@ -58,12 +59,27 @@ class EnvisionTimesheetReportView(APIView):
         if date_to < date_from:
             return Response({"error": "date_to must be on or after date_from"}, status=400)
 
+        # ── Scope everything to the logged-in user's workspace(s) ─────────────
+        # (same pattern as TimeEntryViewSet.get_queryset — see time_entries/views.py)
+        user = request.user
+        if user.is_superuser:
+            workspace_ids = None  # superusers are not workspace-restricted
+        else:
+            workspace_ids = list(
+                WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
+            )
+            if not workspace_ids:
+                return Response({"error": "You are not a member of any workspace."}, status=403)
+
         # ── Fetch project (optional) ──────────────────────────────────────────
         project = None
         if project_id:
             try:
                 project = Project.objects.select_related("client", "workspace").get(id=project_id)
             except Project.DoesNotExist:
+                return Response({"error": "Project not found"}, status=404)
+
+            if workspace_ids is not None and project.workspace_id not in workspace_ids:
                 return Response({"error": "Project not found"}, status=404)
 
         # ── Fetch task (optional, only valid with a project) ──────────────────
@@ -79,11 +95,13 @@ class EnvisionTimesheetReportView(APIView):
             except Task.DoesNotExist:
                 return Response({"error": "Task not found for this project"}, status=404)
 
-        # ── Fetch time entries ────────────────────────────────────────────────
+        # ── Fetch time entries ─────────────────────────────────────────────────
         entries_qs = TimeEntry.objects.filter(
             start_time__date__gte=date_from,
             start_time__date__lte=date_to,
         )
+        if workspace_ids is not None:
+            entries_qs = entries_qs.filter(workspace_id__in=workspace_ids)
         if project_id:
             entries_qs = entries_qs.filter(project_id=project_id)
         if task_id:
