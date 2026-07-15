@@ -26,7 +26,7 @@ class TimeEntrySerializer(serializers.ModelSerializer):
     # Output serializer for GET
     assets = AssetUsageOutputSerializer(source="asset_usages", many=True, read_only=True)
 
-    # Input serializer for POST/PATCH
+    # Input serializer for POST/PATCH — not a model field, handled in perform_create/perform_update
     asset_inputs = AssetUsageInputSerializer(many=True, write_only=True, required=False)
 
     class Meta:
@@ -40,6 +40,16 @@ class TimeEntrySerializer(serializers.ModelSerializer):
             "id","user","workspace","duration","hourly_rate","cost",
             "created_at","created_by","assets"
         ]
+
+    def create(self, validated_data):
+        # asset_inputs is not a model field — it's consumed by perform_create
+        # after save(). Strip it here so objects.create() doesn't choke on it.
+        validated_data.pop("asset_inputs", None)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop("asset_inputs", None)
+        return super().update(instance, validated_data)
 
 class BulkTimeEntrySerializer(serializers.Serializer):
     date = serializers.DateField(format="%Y-%m-%d")
