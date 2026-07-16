@@ -1,7 +1,7 @@
 from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError, PermissionDenied
 from rest_framework.views import APIView
 from django.db.models import Sum
 from collections import defaultdict
@@ -40,21 +40,37 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
     # -----------------------------------------------------
     # ✔ FILTER BY WORKSPACE FOR SECURITY
     # -----------------------------------------------------
+    ELEVATED_ROLES = {"admin", "manager", "field_manager"}
+
     def get_queryset(self):
         user = self.request.user
+        user_id_param = self.request.query_params.get("user")
 
         if user.is_superuser:
-            queryset = TimeEntry.objects.filter(is_deleted=False, user=user)
+            queryset = TimeEntry.objects.filter(is_deleted=False)
         else:
-            workspace_ids = WorkspaceMember.objects.filter(
-                user=user
-            ).values_list("workspace_id", flat=True)
+            memberships = WorkspaceMember.objects.filter(user=user)
+            workspace_ids = memberships.values_list("workspace_id", flat=True)
+            has_workspace_wide_access = memberships.filter(
+                role__in=self.ELEVATED_ROLES
+            ).exists()
 
             queryset = TimeEntry.objects.filter(
                 workspace_id__in=workspace_ids,
                 is_deleted=False,
-                user=user
             )
+
+            if not has_workspace_wide_access:
+                # Regular users may only ever see their own entries — a
+                # ?user=<uuid> for someone else is not silently swapped in.
+                if user_id_param and str(user_id_param) != str(user.id):
+                    raise PermissionDenied(
+                        "You are not authorized to view another user's time entries."
+                    )
+                queryset = queryset.filter(user=user)
+
+        if user_id_param:
+            queryset = queryset.filter(user_id=user_id_param)
 
         return self._filter_by_date_range(queryset)
 
