@@ -44,17 +44,42 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         if user.is_superuser:
-            return TimeEntry.objects.filter(is_deleted=False,user=user)
+            queryset = TimeEntry.objects.filter(is_deleted=False, user=user)
+        else:
+            workspace_ids = WorkspaceMember.objects.filter(
+                user=user
+            ).values_list("workspace_id", flat=True)
 
-        workspace_ids = WorkspaceMember.objects.filter(
-            user=user
-        ).values_list("workspace_id", flat=True)
+            queryset = TimeEntry.objects.filter(
+                workspace_id__in=workspace_ids,
+                is_deleted=False,
+                user=user
+            )
 
-        return TimeEntry.objects.filter(
-            workspace_id__in=workspace_ids,
-            is_deleted=False,
-            user = user
-        )
+        return self._filter_by_date_range(queryset)
+
+    def _filter_by_date_range(self, queryset):
+        """Apply ?start_date=&end_date= as an inclusive range on start_time's date.
+        Accepts plain YYYY-MM-DD or a full ISO datetime (any time component is ignored).
+        """
+        start_date_param = self.request.query_params.get("start_date")
+        end_date_param = self.request.query_params.get("end_date")
+
+        if not start_date_param and not end_date_param:
+            return queryset
+
+        if not start_date_param:
+            start_date_param = end_date_param
+        if not end_date_param:
+            end_date_param = start_date_param
+
+        try:
+            start_date = datetime.strptime(str(start_date_param).split("T")[0], "%Y-%m-%d").date()
+            end_date = datetime.strptime(str(end_date_param).split("T")[0], "%Y-%m-%d").date()
+        except ValueError:
+            raise ValidationError("start_date/end_date must be in YYYY-MM-DD format.")
+
+        return queryset.filter(start_time__date__range=(start_date, end_date))
 
     # -----------------------------------------------------
     # ✔ OVERRIDE CREATE — CALCULATE RATE, COST, DURATION
