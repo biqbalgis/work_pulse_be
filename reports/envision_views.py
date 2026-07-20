@@ -163,14 +163,12 @@ class EnvisionLEMReportView(APIView):
                 asset_map[asset.id]["cost"] += cost
 
                 if asset.charge_type == "hourly":
-                    hrs = (
-                        Decimal(usage.quantity_used)
-                        if usage.quantity_used is not None
-                        else Decimal(entry.duration) / 60
-                    )
-                    asset_map[asset.id]["hours"] += hrs
-                    # asset_map[asset.id]["hours"] = Decimal(entry.duration) / 60
-                    asset_map[asset.id]["rate"]   = Decimal(asset.hourly_rate or 0)
+                    # quantity_used is the authoritative value — if it wasn't
+                    # recorded for this usage, leave it out rather than
+                    # guessing from the time entry's duration.
+                    if usage.quantity_used is not None:
+                        asset_map[asset.id]["hours"] += Decimal(usage.quantity_used)
+                    asset_map[asset.id]["rate"] = Decimal(asset.hourly_rate or 0)
                 else:
                     asset_map[asset.id]["units"] += Decimal(usage.quantity_used or 0)
                     asset_map[asset.id]["rate"]   = Decimal(asset.quantity_rate or 0)
@@ -483,12 +481,14 @@ class EnvisionCostingLEMView(APIView):
                 cost       = Decimal(usage.cost or 0)
                 asset_total += cost
 
+                # quantity_used is the authoritative value for both charge
+                # types — leave blank rather than guessing from duration.
+                hrs_units = _fmt_money(usage.quantity_used) if usage.quantity_used is not None else ""
+
                 if asset.charge_type == "hourly":
-                    hrs_units = _fmt_money(round(Decimal(entry.duration or 0) / 60, 2))
-                    rate_val  = _fmt_money(Decimal(asset.hourly_rate or 0))
+                    rate_val = _fmt_money(Decimal(asset.hourly_rate or 0))
                 else:
-                    hrs_units = _fmt_money(Decimal(usage.quantity_used or 0))
-                    rate_val  = _fmt_money(Decimal(asset.quantity_rate or 0))
+                    rate_val = _fmt_money(Decimal(asset.quantity_rate or 0))
 
                 asset_rows.append({
                     "name":       asset.name,
