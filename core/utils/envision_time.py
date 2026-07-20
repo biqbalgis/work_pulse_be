@@ -15,6 +15,7 @@ other (non-Envision) workspaces/endpoints are unaffected.
 import datetime as dt
 from zoneinfo import ZoneInfo
 
+import holidays as holidays_lib
 from django.utils import timezone as dj_timezone
 
 ENVISION_TZ = ZoneInfo("America/Edmonton")
@@ -47,3 +48,13 @@ def utc_to_envision_local(utc_dt):
     if dj_timezone.is_aware(utc_dt):
         return utc_dt.astimezone(ENVISION_TZ)
     return dj_timezone.make_aware(utc_dt, dt.timezone.utc).astimezone(ENVISION_TZ)
+
+
+def alberta_stat_holidays(years):
+    """Return the set of Alberta (Canada) statutory holiday dates for the
+    given years — Envision GEO is based in Calgary, AB. Computed on the fly
+    via the `holidays` package rather than a hardcoded list, so it stays
+    correct for any year without maintenance. Deliberately independent of
+    the workspaces.Holiday model, whose seeded data is BC-specific and may
+    be used by other (non-Envision) workspaces."""
+    return set(holidays_lib.country_holidays("CA", subdiv="AB", years=list(years)).keys())
