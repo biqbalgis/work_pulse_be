@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
+from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
 from projects.models import Project
 from tasks.models import Task
 from time_entries.models import TimeEntry
@@ -85,9 +86,13 @@ class EnvisionLEMReportView(APIView):
         address_lines = _address_to_lines(workspace.address or "")
 
         # ── Fetch time entries ────────────────────────────────────────────────
+        # report_date is a Mountain-Time (Envision GEO) calendar day — match it
+        # against the UTC-stored start_time using explicit MT day boundaries,
+        # not start_time__date (which depends on server TIME_ZONE, i.e. UTC).
+        day_start, day_end = envision_day_bounds_utc(report_date)
         entries = (
             TimeEntry.objects
-            .filter(project_id=project_id, task_id=task_id, start_time__date=report_date)
+            .filter(project_id=project_id, task_id=task_id, start_time__gte=day_start, start_time__lte=day_end)
             .select_related("user", "job_title")
             .prefetch_related("asset_usages__asset")
             .order_by("start_time")
@@ -405,12 +410,16 @@ class EnvisionCostingLEMView(APIView):
         address_lines = _address_to_lines(workspace.address or "")
 
         # ── Fetch time entries ────────────────────────────────────────────────
+        # date_from/date_to are Mountain-Time (Envision GEO) calendar days —
+        # match them against UTC-stored start_time using explicit MT bounds.
+        range_start, _ = envision_day_bounds_utc(date_from)
+        _, range_end = envision_day_bounds_utc(date_to)
         entries_qs = (
             TimeEntry.objects
             .filter(
                 project_id=project_id,
-                start_time__date__gte=date_from,
-                start_time__date__lte=date_to,
+                start_time__gte=range_start,
+                start_time__lte=range_end,
             )
             .select_related("user", "job_title")
             .prefetch_related("asset_usages__asset")
@@ -446,7 +455,7 @@ class EnvisionCostingLEMView(APIView):
                 }
 
             labour_map[key]["entries"].append({
-                "date":        entry.start_time.strftime("%b %d, %Y"),
+                "date":        utc_to_envision_local(entry.start_time).strftime("%b %d, %Y"),
                 "description": (entry.description or "").strip(),
                 "hours":       _fmt_money(round(hours, 2)),
                 "rate":        _fmt_money(rate),
@@ -483,7 +492,7 @@ class EnvisionCostingLEMView(APIView):
 
                 asset_rows.append({
                     "name":       asset.name,
-                    "date":       entry.start_time.strftime("%b %d, %Y"),
+                    "date":       utc_to_envision_local(entry.start_time).strftime("%b %d, %Y"),
                     "hours_units": hrs_units,
                     "rate":       rate_val,
                     "total":      _fmt_money(cost),

@@ -21,6 +21,7 @@ from .serializers import (
     BulkTimeEntrySerializer,
     BulkTimeEntryEditSerializer,
     BulkTimeEntryOutputSerializer,
+    resolve_quantity_used,
 )
 from projects.models import ProjectRole
 from projects.models import UserProjectRole
@@ -168,7 +169,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
             usage = AssetUsage.objects.create(
                 time_entry=time_entry,
                 asset=asset,
-                quantity_used=item.get("quantity_used")  # optional
+                quantity_used=resolve_quantity_used(item)  # optional
             )
             usage.cost = usage.calculate_cost(duration_hours)  # cost based on duration or qty
             usage.save()
@@ -266,7 +267,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
                 usage = AssetUsage.objects.create(
                     time_entry=entry,
                     asset=asset,
-                    quantity_used=item.get("quantity_used")
+                    quantity_used=resolve_quantity_used(item)
                 )
                 usage.cost = usage.calculate_cost(duration_hours_decimal)
                 usage.save()

@@ -20,7 +20,18 @@ class AssetUsageOutputSerializer(serializers.ModelSerializer):
 
 class AssetUsageInputSerializer(serializers.Serializer):
     asset_id = serializers.UUIDField()
+    # hourly_used and quantity_used both map to the same AssetUsage.quantity_used
+    # column — the frontend sends whichever applies to the asset's charge_type.
+    # See resolve_quantity_used() below.
     quantity_used = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    hourly_used = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+
+
+def resolve_quantity_used(item):
+    """Pick whichever of quantity_used/hourly_used was actually sent — both
+    are stored in AssetUsage.quantity_used, whichever is present wins."""
+    quantity_used = item.get("quantity_used")
+    return quantity_used if quantity_used is not None else item.get("hourly_used")
 
 class TimeEntrySerializer(serializers.ModelSerializer):
     # Output serializer for GET

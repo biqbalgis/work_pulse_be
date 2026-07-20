@@ -13,6 +13,8 @@ from datetime import date, timedelta
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
+from core.utils.envision_time import utc_to_envision_local
+
 # ── Style constants ────────────────────────────────────────────────────────────
 HEADER_FILL = PatternFill("solid", fgColor="4F81BD")
 TOTAL_FILL  = PatternFill("solid", fgColor="DCE6F1")
@@ -128,10 +130,10 @@ def generate_envision_timesheet_xlsx(
     # ── Per-user data ──────────────────────────────────────────────────────────
     for user_name, entries in entries_by_user.items():
 
-        # Group entries by week-Sunday
+        # Group entries by week-Sunday (Mountain-Time calendar day, not raw UTC)
         weeks = {}
         for entry in entries:
-            week_sun = _week_sunday(entry.start_time.date())
+            week_sun = _week_sunday(utc_to_envision_local(entry.start_time).date())
             weeks.setdefault(week_sun, []).append(entry)
 
         week_number = 1
@@ -150,7 +152,7 @@ def generate_envision_timesheet_xlsx(
             week_meals = 0
 
             for entry in sorted(week_entries, key=lambda e: e.start_time):
-                day_str   = entry.start_time.date().strftime("%A, %d-%m-%Y")
+                day_str   = utc_to_envision_local(entry.start_time).strftime("%A, %d-%m-%Y")
                 rt, ot    = _split_rt_ot(entry.duration or 0)
                 total     = rt + ot
                 meals_val = 1 if entry.meals else None

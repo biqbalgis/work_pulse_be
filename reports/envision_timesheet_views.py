@@ -11,6 +11,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.utils.envision_time import envision_day_bounds_utc
 from projects.models import Project
 from tasks.models import Task
 from time_entries.models import TimeEntry
@@ -96,9 +97,13 @@ class EnvisionTimesheetReportView(APIView):
                 return Response({"error": "Task not found for this project"}, status=404)
 
         # ── Fetch time entries ─────────────────────────────────────────────────
+        # date_from/date_to are Mountain-Time (Envision GEO) calendar days —
+        # match them against UTC-stored start_time using explicit MT bounds.
+        range_start, _ = envision_day_bounds_utc(date_from)
+        _, range_end = envision_day_bounds_utc(date_to)
         entries_qs = TimeEntry.objects.filter(
-            start_time__date__gte=date_from,
-            start_time__date__lte=date_to,
+            start_time__gte=range_start,
+            start_time__lte=range_end,
         )
         if workspace_ids is not None:
             entries_qs = entries_qs.filter(workspace_id__in=workspace_ids)
