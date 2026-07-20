@@ -6,26 +6,25 @@ An office user submits time entries on behalf of multiple field users in one
 request. Each entry may include one or more assets.
 """
 
-from datetime import datetime
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Sum
-from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from approvals.models import TimeEntryApproval, TimeEntryApprovalItem
 from approvals.utils import get_week_bounds
+from core.utils.envision_time import envision_local_to_utc
 from core.utils.logger import log_activity
 from organization_asset.models import AssetUsage, OrganizationAsset
 from projects.models import ProjectRole, UserProjectRole
 from workspaces.models import WorkspaceMember
 
 from .models import TimeEntry
-from .serializers import FieldTicketEntrySerializer
+from .serializers import FieldTicketEntrySerializer, resolve_quantity_used
 
 User = get_user_model()
 
@@ -129,17 +128,13 @@ class FieldTicketBulkEntryView(APIView):
         if hourly_rate is None:
             raise ValueError("Hourly rate not found for this user/project/job-title combination.")
 
-        # 4. Build timezone-aware datetimes
+        # 4. Build UTC-aware datetimes — Field Ticket times from the frontend
+        # are always Mountain Time (Envision GEO), regardless of server TIME_ZONE.
         entry_date   = data["date"]
         end_date_val = data.get("end_date") or entry_date
-        current_tz   = timezone.get_current_timezone()
 
-        start_dt = timezone.make_aware(
-            datetime.combine(entry_date, data["start_time"]), current_tz
-        )
-        end_dt = timezone.make_aware(
-            datetime.combine(end_date_val, data["end_time"]), current_tz
-        )
+        start_dt = envision_local_to_utc(entry_date, data["start_time"])
+        end_dt = envision_local_to_utc(end_date_val, data["end_time"])
 
         if end_dt <= start_dt:
             raise ValueError("end_time must be after start_time.")
@@ -176,7 +171,7 @@ class FieldTicketBulkEntryView(APIView):
             usage = AssetUsage.objects.create(
                 time_entry=time_entry,
                 asset=asset,
-                quantity_used=asset_item.get("quantity_used"),
+                quantity_used=resolve_quantity_used(asset_item),
             )
             usage.cost = usage.calculate_cost(duration_hours)
             usage.save()
