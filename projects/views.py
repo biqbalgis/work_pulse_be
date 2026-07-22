@@ -179,7 +179,7 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         job_title = JobTitle.objects.filter(name__iexact=job_title_name).first()
         if job_title:
             return job_title, False
-        return JobTitle.objects.get_or_restore(defaults={"name": job_title_name})
+        return JobTitle.objects.get_or_restore(name=job_title_name)
 
     def _get_or_create_project_role(self, project, job_title, hourly_rate):
         return ProjectRole.objects.get_or_restore(
