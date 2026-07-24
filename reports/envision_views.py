@@ -432,12 +432,12 @@ class EnvisionCostingLEMView(APIView):
                 status=404,
             )
 
-        # ── Build labour groups (keyed by job_title/Work Type first, then user) ──
+        # ── Build labour groups (keyed by job_title/Work Type only — one total per Work Type, not per user) ──
         labour_map   = OrderedDict()
         grand_total  = Decimal("0")
 
         for entry in entries_qs:
-            key        = (getattr(entry.job_title, "id", None), entry.user_id)
+            key        = getattr(entry.job_title, "id", None)
             emp_name   = entry.user.get_full_name() or entry.user.email
             jt_name    = entry.job_title.name if entry.job_title else "—"
             task_name  = entry.task.name if entry.task else ""
@@ -447,13 +447,14 @@ class EnvisionCostingLEMView(APIView):
 
             if key not in labour_map:
                 labour_map[key] = {
-                    "employee":  emp_name,
-                    "job_title": jt_name,
-                    "entries":   [],
-                    "subtotal":  Decimal("0"),
+                    "job_title":   jt_name,
+                    "entries":     [],
+                    "hours_total": Decimal("0"),
+                    "subtotal":    Decimal("0"),
                 }
 
             labour_map[key]["entries"].append({
+                "employee":    emp_name,
                 "date":        utc_to_envision_local(entry.start_time).strftime("%b %d, %Y"),
                 "task":        task_name,
                 "description": (entry.description or "").strip(),
@@ -461,16 +462,17 @@ class EnvisionCostingLEMView(APIView):
                 "rate":        _fmt_money(rate),
                 "total":       _fmt_money(line_total),
             })
-            labour_map[key]["subtotal"] += line_total
+            labour_map[key]["hours_total"] += hours
+            labour_map[key]["subtotal"]    += line_total
             grand_total += line_total
 
         labour_groups = []
         for grp in labour_map.values():
             labour_groups.append({
-                "employee":  grp["employee"],
-                "job_title": grp["job_title"],
-                "entries":   grp["entries"],
-                "subtotal":  _fmt_money(grp["subtotal"]),
+                "job_title":   grp["job_title"],
+                "entries":     grp["entries"],
+                "hours_total": _fmt_money(round(grp["hours_total"], 2)),
+                "subtotal":    _fmt_money(grp["subtotal"]),
             })
 
         # ── Build asset rows ──────────────────────────────────────────────────

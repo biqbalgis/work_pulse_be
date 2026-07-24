@@ -6,7 +6,9 @@ Table columns:
   Name/Asset | Date | Work Type | Task | Description | Hrs/Units | Rate | Total
 
 Layout:
-  - Labour rows grouped by (job_title/Work Type, employee) → subtotal row per group
+  - Labour rows grouped by job_title/Work Type ONLY (all employees doing that
+    Work Type share one group) → one subtotal row per Work Type, showing both
+    total hours and total cost across every employee in that group
   - Asset rows → Asset Total row
   - Grand Total row
 
@@ -24,13 +26,13 @@ Expected `data` dict shape:
     "pm_phone":         "403-902-1221",
     "labour_groups": [
         {
-            "employee":  "Tyson Bancroft",
             "job_title": "PC",
             "entries": [
-                {"date": "May 20, 2026", "task": "Bridge Deck Survey", "description": "Orientation",
-                 "hours": "4", "rate": "150", "total": "600"},
+                {"employee": "Tyson Bancroft", "date": "May 20, 2026", "task": "Bridge Deck Survey",
+                 "description": "Orientation", "hours": "4", "rate": "150", "total": "600"},
                 ...
             ],
+            "hours_total": "10",
             "subtotal": "750",
         },
         ...
@@ -136,14 +138,13 @@ def _build_costing_table(data):
 
     ri = 1  # current row index (0 = header)
 
-    # ── Labour groups ─────────────────────────────────────────────────────────
+    # ── Labour groups (one per Work Type, all employees combined) ─────────────
     for group in data.get("labour_groups", []):
-        employee  = group.get("employee", "")
         job_title = group.get("job_title", "")
 
         for entry in group.get("entries", []):
             rows.append([
-                _pc(employee),
+                _pc(entry.get("employee", "")),
                 _pc(entry.get("date", ""),        align=TA_CENTER),
                 _pc(job_title,                    align=TA_CENTER),
                 _pc(entry.get("task", ""),         align=TA_CENTER),
@@ -154,9 +155,11 @@ def _build_costing_table(data):
             ])
             ri += 1
 
-        # Subtotal row
+        # Subtotal row — one per Work Type, totalling hours AND cost across
+        # every employee in the group (not per user).
         rows.append([
-            _pc(""), _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
+            _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
+            _pc(_fmt(group.get("hours_total", "0")), bold=True, align=TA_CENTER),
             _pc("{} Total".format(job_title), bold=True, align=TA_RIGHT),
             _pc(_fmt(group.get("subtotal", "0")), bold=True, align=TA_RIGHT),
         ])
