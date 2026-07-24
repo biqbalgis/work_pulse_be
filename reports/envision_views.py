@@ -419,9 +419,9 @@ class EnvisionCostingLEMView(APIView):
                 start_time__gte=range_start,
                 start_time__lte=range_end,
             )
-            .select_related("user", "job_title")
+            .select_related("user", "job_title", "task")
             .prefetch_related("asset_usages__asset")
-            .order_by("user__first_name", "user__last_name", "job_title__name", "start_time")
+            .order_by("job_title__name", "user__first_name", "user__last_name", "start_time")
         )
         if task_id:
             entries_qs = entries_qs.filter(task_id=task_id)
@@ -432,14 +432,15 @@ class EnvisionCostingLEMView(APIView):
                 status=404,
             )
 
-        # ── Build labour groups (keyed by user + job_title) ───────────────────
+        # ── Build labour groups (keyed by job_title/Work Type first, then user) ──
         labour_map   = OrderedDict()
         grand_total  = Decimal("0")
 
         for entry in entries_qs:
-            key        = (entry.user_id, getattr(entry.job_title, "id", None))
+            key        = (getattr(entry.job_title, "id", None), entry.user_id)
             emp_name   = entry.user.get_full_name() or entry.user.email
             jt_name    = entry.job_title.name if entry.job_title else "—"
+            task_name  = entry.task.name if entry.task else ""
             hours      = Decimal(entry.duration or 0) / 60
             rate       = Decimal(entry.hourly_rate or 0)
             line_total = round(hours * rate, 2)
@@ -454,6 +455,7 @@ class EnvisionCostingLEMView(APIView):
 
             labour_map[key]["entries"].append({
                 "date":        utc_to_envision_local(entry.start_time).strftime("%b %d, %Y"),
+                "task":        task_name,
                 "description": (entry.description or "").strip(),
                 "hours":       _fmt_money(round(hours, 2)),
                 "rate":        _fmt_money(rate),

@@ -3,10 +3,10 @@ Envision GEO — Costing LEM PDF Generator
 Same header/footer as the Field Ticket LEM.
 
 Table columns:
-  Name/Asset | Date | Work Type | Description | Hrs/Units | Rate | Total
+  Name/Asset | Date | Work Type | Task | Description | Hrs/Units | Rate | Total
 
 Layout:
-  - Labour rows grouped by (employee, job_title) → subtotal row per group
+  - Labour rows grouped by (job_title/Work Type, employee) → subtotal row per group
   - Asset rows → Asset Total row
   - Grand Total row
 
@@ -27,7 +27,7 @@ Expected `data` dict shape:
             "employee":  "Tyson Bancroft",
             "job_title": "PC",
             "entries": [
-                {"date": "May 20, 2026", "description": "Orientation",
+                {"date": "May 20, 2026", "task": "Bridge Deck Survey", "description": "Orientation",
                  "hours": "4", "rate": "150", "total": "600"},
                 ...
             ],
@@ -79,11 +79,12 @@ GRAND_FG    = colors.white
 from reportlab.lib.units import inch
 
 COL_WIDTHS = [
-    1.55 * inch,   # Name / Asset
-    0.85 * inch,   # Date
-    0.90 * inch,   # Work Type
-    1.55 * inch,   # Description
-    0.65 * inch,   # Hrs / Units
+    1.35 * inch,   # Name / Asset
+    0.75 * inch,   # Date
+    0.80 * inch,   # Work Type
+    0.80 * inch,   # Task
+    1.20 * inch,   # Description
+    0.60 * inch,   # Hrs / Units
     0.75 * inch,   # Rate
     0.75 * inch,   # Total
 ]
@@ -114,6 +115,7 @@ def _build_costing_table(data):
         _pc("NAME / ASSET",  bold=True, align=TA_CENTER, color=HEADER_FG),
         _pc("DATE",          bold=True, align=TA_CENTER, color=HEADER_FG),
         _pc("WORK TYPE",     bold=True, align=TA_CENTER, color=HEADER_FG),
+        _pc("TASK",          bold=True, align=TA_CENTER, color=HEADER_FG),
         _pc("DESCRIPTION",   bold=True, align=TA_CENTER, color=HEADER_FG),
         _pc("HRS / UNITS",   bold=True, align=TA_CENTER, color=HEADER_FG),
         _pc("RATE",          bold=True, align=TA_CENTER, color=HEADER_FG),
@@ -144,6 +146,7 @@ def _build_costing_table(data):
                 _pc(employee),
                 _pc(entry.get("date", ""),        align=TA_CENTER),
                 _pc(job_title,                    align=TA_CENTER),
+                _pc(entry.get("task", ""),         align=TA_CENTER),
                 _pc(entry.get("description", "")),
                 _pc(_fmt(entry.get("hours", "")), align=TA_CENTER),
                 _pc(_fmt(entry.get("rate", "")),  align=TA_RIGHT),
@@ -153,7 +156,7 @@ def _build_costing_table(data):
 
         # Subtotal row
         rows.append([
-            _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
+            _pc(""), _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
             _pc("{} Total".format(job_title), bold=True, align=TA_RIGHT),
             _pc(_fmt(group.get("subtotal", "0")), bold=True, align=TA_RIGHT),
         ])
@@ -166,6 +169,7 @@ def _build_costing_table(data):
             _pc(asset.get("name", "")),
             _pc(asset.get("date", ""),                align=TA_CENTER),
             _pc(""),                                   # Work Type — empty for assets
+            _pc(""),                                   # Task — empty for assets
             _pc(""),                                   # Description — empty
             _pc(_fmt(asset.get("hours_units", "")),   align=TA_CENTER),
             _pc(_fmt(asset.get("rate", "")),          align=TA_RIGHT),
@@ -176,7 +180,7 @@ def _build_costing_table(data):
     # Asset total (only if there are assets)
     if data.get("asset_rows"):
         rows.append([
-            _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
+            _pc(""), _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
             _pc("Asset Total", bold=True, align=TA_RIGHT),
             _pc(_fmt(data.get("asset_total", "0")), bold=True, align=TA_RIGHT),
         ])
@@ -185,7 +189,7 @@ def _build_costing_table(data):
 
     # ── Grand total ───────────────────────────────────────────────────────────
     rows.append([
-        _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
+        _pc(""), _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
         _pc("Total", bold=True, align=TA_RIGHT, color=GRAND_FG),
         _pc(_fmt(data.get("grand_total", "0")), bold=True, align=TA_RIGHT, color=GRAND_FG),
     ])
