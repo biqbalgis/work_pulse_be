@@ -475,32 +475,40 @@ class EnvisionCostingLEMView(APIView):
                 "subtotal":    _fmt_money(grp["subtotal"]),
             })
 
-        # ── Build asset rows ──────────────────────────────────────────────────
+        # ── Build asset rows (sorted by asset name, then date) ────────────────
+        asset_usage_pairs = [
+            (entry, usage)
+            for entry in entries_qs
+            for usage in entry.asset_usages.all()
+        ]
+        asset_usage_pairs.sort(
+            key=lambda pair: (pair[1].asset.name.lower(), utc_to_envision_local(pair[0].start_time))
+        )
+
         asset_rows  = []
         asset_total = Decimal("0")
 
-        for entry in entries_qs:
-            for usage in entry.asset_usages.all():
-                asset      = usage.asset
-                cost       = Decimal(usage.cost or 0)
-                asset_total += cost
+        for entry, usage in asset_usage_pairs:
+            asset      = usage.asset
+            cost       = Decimal(usage.cost or 0)
+            asset_total += cost
 
-                # quantity_used is the authoritative value for both charge
-                # types — leave blank rather than guessing from duration.
-                hrs_units = _fmt_money(usage.quantity_used) if usage.quantity_used is not None else ""
+            # quantity_used is the authoritative value for both charge
+            # types — leave blank rather than guessing from duration.
+            hrs_units = _fmt_money(usage.quantity_used) if usage.quantity_used is not None else ""
 
-                if asset.charge_type == "hourly":
-                    rate_val = _fmt_money(Decimal(asset.hourly_rate or 0))
-                else:
-                    rate_val = _fmt_money(Decimal(asset.quantity_rate or 0))
+            if asset.charge_type == "hourly":
+                rate_val = _fmt_money(Decimal(asset.hourly_rate or 0))
+            else:
+                rate_val = _fmt_money(Decimal(asset.quantity_rate or 0))
 
-                asset_rows.append({
-                    "name":       asset.name,
-                    "date":       utc_to_envision_local(entry.start_time).strftime("%b %d, %Y"),
-                    "hours_units": hrs_units,
-                    "rate":       rate_val,
-                    "total":      _fmt_money(cost),
-                })
+            asset_rows.append({
+                "name":       asset.name,
+                "date":       utc_to_envision_local(entry.start_time).strftime("%b %d, %Y"),
+                "hours_units": hrs_units,
+                "rate":       rate_val,
+                "total":      _fmt_money(cost),
+            })
 
         grand_total += asset_total
 
