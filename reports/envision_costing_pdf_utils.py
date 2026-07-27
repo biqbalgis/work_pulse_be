@@ -103,6 +103,12 @@ def _fmt(v):
         return str(v or "")
 
 
+def _money(v):
+    """Same as _fmt but prefixed with $ — for cost fields (rate/total/
+    subtotal/grand total), never for hours/units."""
+    return "${}".format(_fmt(v))
+
+
 def _pc(text, bold=False, align=TA_LEFT, color=colors.black):
     return p(text, size=9, bold=bold, align=align, color=color)
 
@@ -149,19 +155,21 @@ def _build_costing_table(data):
                 _pc(job_title,                    align=TA_CENTER),
                 _pc(entry.get("task", ""),         align=TA_CENTER),
                 _pc(entry.get("description", "")),
-                _pc(_fmt(entry.get("hours", "")), align=TA_CENTER),
-                _pc(_fmt(entry.get("rate", "")),  align=TA_RIGHT),
-                _pc(_fmt(entry.get("total", "")), align=TA_RIGHT),
+                _pc(_fmt(entry.get("hours", "")),  align=TA_CENTER),
+                _pc(_money(entry.get("rate", "")),  align=TA_RIGHT),
+                _pc(_money(entry.get("total", "")), align=TA_RIGHT),
             ])
             ri += 1
 
         # Subtotal row — one per Work Type, totalling hours AND cost across
-        # every employee in the group (not per user).
+        # every employee in the group (not per user). Label sits in the
+        # Description column, right before the Hours/Rate/Total values.
         rows.append([
-            _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
-            _pc(_fmt(group.get("hours_total", "0")), bold=True, align=TA_CENTER),
+            _pc(""), _pc(""), _pc(""), _pc(""),
             _pc("{} Total".format(job_title), bold=True, align=TA_RIGHT),
-            _pc(_fmt(group.get("subtotal", "0")), bold=True, align=TA_RIGHT),
+            _pc(_fmt(group.get("hours_total", "0")), bold=True, align=TA_CENTER),
+            _pc(""),
+            _pc(_money(group.get("subtotal", "0")), bold=True, align=TA_RIGHT),
         ])
         style_cmds.append(("BACKGROUND", (0, ri), (-1, ri), SUBTOTAL_BG))
         ri += 1
@@ -175,8 +183,8 @@ def _build_costing_table(data):
             _pc(""),                                   # Task — empty for assets
             _pc(""),                                   # Description — empty
             _pc(_fmt(asset.get("hours_units", "")),   align=TA_CENTER),
-            _pc(_fmt(asset.get("rate", "")),          align=TA_RIGHT),
-            _pc(_fmt(asset.get("total", "")),         align=TA_RIGHT),
+            _pc(_money(asset.get("rate", "")),        align=TA_RIGHT),
+            _pc(_money(asset.get("total", "")),       align=TA_RIGHT),
         ])
         ri += 1
 
@@ -185,7 +193,7 @@ def _build_costing_table(data):
         rows.append([
             _pc(""), _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
             _pc("Asset Total", bold=True, align=TA_RIGHT),
-            _pc(_fmt(data.get("asset_total", "0")), bold=True, align=TA_RIGHT),
+            _pc(_money(data.get("asset_total", "0")), bold=True, align=TA_RIGHT),
         ])
         style_cmds.append(("BACKGROUND", (0, ri), (-1, ri), SUBTOTAL_BG))
         ri += 1
@@ -194,7 +202,7 @@ def _build_costing_table(data):
     rows.append([
         _pc(""), _pc(""), _pc(""), _pc(""), _pc(""), _pc(""),
         _pc("Total", bold=True, align=TA_RIGHT, color=GRAND_FG),
-        _pc(_fmt(data.get("grand_total", "0")), bold=True, align=TA_RIGHT, color=GRAND_FG),
+        _pc(_money(data.get("grand_total", "0")), bold=True, align=TA_RIGHT, color=GRAND_FG),
     ])
     style_cmds.append(("BACKGROUND", (0, ri), (-1, ri), GRAND_BG))
     style_cmds.append(("TEXTCOLOR",  (0, ri), (-1, ri), GRAND_FG))
