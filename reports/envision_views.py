@@ -11,11 +11,13 @@ from datetime import datetime
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Sum
 from django.http import FileResponse
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
+from approvals.models import TimeEntryApproval, TimeEntryApprovalItem
 from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
 from projects.models import Project
 from tasks.models import Task
@@ -331,10 +333,13 @@ class EnvisionLEMVoidView(APIView):
     POST /api/reports/envision/lem/void/
 
     Void a LEM: soft-deletes the LEMReport row itself, plus every TimeEntry
-    it covers (matched by the LEM's own project + task + date). This makes
-    the LEM number stop showing up in EnvisionLEMSearchView and in the
-    "reuse existing LEM" lookups in EnvisionLEMReportView/EnvisionCostingLEMView,
-    and frees the underlying time entries to be re-entered under a new LEM.
+    it covers (matched by the LEM's own project + task + date) — along with
+    each entry's AssetUsage rows and TimeEntryApprovalItem rows, and any
+    TimeEntryApproval left with no items after that. None of these show up
+    in reports once their TimeEntry is gone. This makes the LEM number stop
+    showing up in EnvisionLEMSearchView and in the "reuse existing LEM"
+    lookups in EnvisionLEMReportView/EnvisionCostingLEMView, and frees the
+    underlying time entries to be re-entered under a new LEM.
 
     Required body params:
         lem_number  (str)  — with or without the FT-/CT- prefix
@@ -386,9 +391,24 @@ class EnvisionLEMVoidView(APIView):
 
         entries = list(entries_qs)
 
+        # Approvals that reference any of these entries — synced (or voided
+        # themselves, if left empty) after the entries are gone, so their
+        # total_hours never counts a soft-deleted entry.
+        approvals = list(
+            TimeEntryApproval.objects.filter(items__time_entry__in=entries).distinct()
+        )
+
         with transaction.atomic():
             for entry in entries:
+                for asset_usage in entry.asset_usages.all():
+                    asset_usage.delete()
+                for approval_item in TimeEntryApprovalItem.objects.filter(time_entry=entry):
+                    approval_item.delete()
                 entry.delete()  # SoftDeleteModel.delete() -> is_deleted=True
+
+            for approval in approvals:
+                self._sync_approval_after_delete(approval)
+
             lem_report.delete()
 
         return Response({
@@ -396,6 +416,25 @@ class EnvisionLEMVoidView(APIView):
             "lem_number": lem_report.lem_number,
             "time_entries_voided": len(entries),
         })
+
+    def _sync_approval_after_delete(self, approval):
+        """Same pattern as TimeEntryViewSet._sync_approval_after_delete —
+        drop the approval if it's left with no items, otherwise recompute
+        total_hours from the entries that are still active."""
+        active_items = TimeEntryApprovalItem.objects.filter(approval=approval)
+
+        if not active_items.exists():
+            approval.delete()
+            return
+
+        total_minutes = (
+            active_items.filter(time_entry__is_deleted=False)
+            .aggregate(total_minutes=Sum("time_entry__duration"))
+            .get("total_minutes")
+            or 0
+        )
+        approval.total_hours = Decimal(total_minutes) / Decimal("60")
+        approval.save(update_fields=["total_hours"])
 
     def _find_lem(self, raw):
         """Exact match first, then try the known Envision prefixes."""
