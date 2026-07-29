@@ -270,6 +270,10 @@ class EnvisionLEMReportView(APIView):
 
         lem_report.report_data = pdf_data
         lem_report.save()
+        # Record exactly which entries this snapshot was built from — voiding
+        # this LEM later only touches these, not every entry that happens to
+        # match the same project/task/date.
+        lem_report.time_entries.set(entries)
 
         try:
             pdf_buffer = generate_envision_lem_pdf(pdf_data)
@@ -332,14 +336,18 @@ class EnvisionLEMVoidView(APIView):
     """
     POST /api/reports/envision/lem/void/
 
-    Void a LEM: soft-deletes the LEMReport row itself, plus every TimeEntry
-    it covers (matched by the LEM's own project + task + date) — along with
-    each entry's AssetUsage rows and TimeEntryApprovalItem rows, and any
-    TimeEntryApproval left with no items after that. None of these show up
-    in reports once their TimeEntry is gone. This makes the LEM number stop
-    showing up in EnvisionLEMSearchView and in the "reuse existing LEM"
-    lookups in EnvisionLEMReportView/EnvisionCostingLEMView, and frees the
-    underlying time entries to be re-entered under a new LEM.
+    Void a LEM: soft-deletes the LEMReport row itself, plus exactly the
+    TimeEntry rows recorded on its `time_entries` relation — i.e. only the
+    entries that were actually part of THIS LEM's snapshot the last time it
+    was (re)generated, never other entries that just happen to share the
+    same project/task/date (entered before, after, or as part of a
+    different LEM). Also soft-deletes each of those entries' AssetUsage
+    rows and TimeEntryApprovalItem rows, and any TimeEntryApproval left with
+    no items after that. None of these show up in reports once their
+    TimeEntry is gone. This makes the LEM number stop showing up in
+    EnvisionLEMSearchView and in the "reuse existing LEM" lookups in
+    EnvisionLEMReportView/EnvisionCostingLEMView, and frees its entries to
+    be re-entered under a new LEM.
 
     Required body params:
         lem_number  (str)  — with or without the FT-/CT- prefix
@@ -347,9 +355,10 @@ class EnvisionLEMVoidView(APIView):
     Restricted to admins/managers/field_managers (or superusers) within the
     workspace that owns the LEM's project.
 
-    Caveat: a Costing LEM (CT-...) only stores lem_date as the date range's
-    start date (date_from) — only time entries on that single day are
-    soft-deleted, not the full date_from..date_to range it was reported over.
+    Note: LEMs generated before the `time_entries` relation existed have
+    nothing recorded on it, so voiding one soft-deletes the LEMReport but
+    no time entries — there's no reliable way to know which ones were
+    "this" LEM's after the fact.
     """
 
     permission_classes = [IsAuthenticated]
@@ -382,14 +391,10 @@ class EnvisionLEMVoidView(APIView):
                     status=403,
                 )
 
-        entries_qs = TimeEntry.objects.filter(project_id=lem_report.project_id)
-        if lem_report.task_id:
-            entries_qs = entries_qs.filter(task_id=lem_report.task_id)
-        if lem_report.lem_date:
-            day_start, day_end = envision_day_bounds_utc(lem_report.lem_date)
-            entries_qs = entries_qs.filter(start_time__gte=day_start, start_time__lte=day_end)
-
-        entries = list(entries_qs)
+        # Exactly the entries recorded against this LEM — not a re-query by
+        # project/task/date, which would also catch entries from other LEMs
+        # or entered before/after this one on the same day.
+        entries = list(lem_report.time_entries.filter(is_deleted=False))
 
         # Approvals that reference any of these entries — synced (or voided
         # themselves, if left empty) after the entries are gone, so their
@@ -713,6 +718,10 @@ class EnvisionCostingLEMView(APIView):
         # ── Save fresh report data onto the (reused or new) LEM record ────────
         lem_report.report_data = pdf_data
         lem_report.save()
+        # Record exactly which entries this snapshot was built from — voiding
+        # this LEM later only touches these, not every entry that happens to
+        # match the same project/task/date range.
+        lem_report.time_entries.set(entries_qs)
 
         # ── Generate PDF ──────────────────────────────────────────────────────
         try:

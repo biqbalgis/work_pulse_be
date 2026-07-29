@@ -15,6 +15,14 @@ class LEMReport(SoftDeleteModel):
     report_data = models.JSONField(default=dict)
     created_at  = models.DateTimeField(auto_now_add=True)
 
+    # Exactly which TimeEntry rows this LEM's report_data was built from —
+    # set (not just added to) every time the LEM is (re)generated, so voiding
+    # only touches entries actually captured in the latest snapshot, not
+    # every entry that happens to match the same project/task/date.
+    time_entries = models.ManyToManyField(
+        "time_entries.TimeEntry", blank=True, related_name="lem_reports",
+    )
+
     class Meta:
         unique_together = [['project', 'lem_number']]
 
