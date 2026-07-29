@@ -2,9 +2,11 @@
 from django.contrib.auth import get_user_model
 from django.db import models
 
+from core.models import SoftDeleteModel
+
 User = get_user_model()
 
-class LEMReport(models.Model):
+class LEMReport(SoftDeleteModel):
     lem_number = models.CharField(max_length=20, editable=False)
     requester  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     project    = models.ForeignKey("projects.Project", on_delete=models.SET_NULL, null=True, blank=True)
@@ -18,12 +20,14 @@ class LEMReport(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.lem_number:
-            # Generate sequential number per project
+            # Generate sequential number per project. Uses all_objects (not
+            # objects) so a voided/soft-deleted LEM's number is never reused —
+            # reusing it would collide with the unique_together constraint.
             if self.project:
-                last_entry = LEMReport.objects.filter(
+                last_entry = LEMReport.all_objects.filter(
                     project=self.project
                 ).order_by("-id").first()
-                
+
                 if last_entry and last_entry.lem_number.startswith("LEM-"):
                     try:
                         # Extract number from LEM-001 format

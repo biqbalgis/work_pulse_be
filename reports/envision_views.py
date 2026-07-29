@@ -3,12 +3,14 @@ Envision GEO — LEM Report API Views
   POST /api/reports/envision/fieldTicket_Lem/   — Field Ticket LEM PDF
   POST /api/reports/envision/costing-lem/        — Costing LEM PDF
   GET  /api/reports/envision/lem/search/         — Search Field Ticket LEM by number
+  POST /api/reports/envision/lem/void/           — Void a LEM (soft-delete LEM + its time entries)
 """
 
 from collections import OrderedDict
 from datetime import datetime
 from decimal import Decimal
 
+from django.db import transaction
 from django.http import FileResponse
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -18,6 +20,7 @@ from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_lo
 from projects.models import Project
 from tasks.models import Task
 from time_entries.models import TimeEntry
+from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceUser
 from .models import LEMReport
 from .envision_pdf_utils import generate_envision_lem_pdf
@@ -217,8 +220,9 @@ class EnvisionLEMReportView(APIView):
         )
         is_new = lem_report is None
         if is_new:
+            # all_objects — a voided LEM's number must never be reused (unique_together).
             last_ft = (
-                LEMReport.objects
+                LEMReport.all_objects
                 .filter(project__workspace=workspace, lem_number__startswith=FT_DB_PREFIX)
                 .order_by("-id")
                 .first()
@@ -320,6 +324,89 @@ class EnvisionLEMSearchView(APIView):
             "lem_date":    str(report.lem_date) if report.lem_date else None,
             "requester":   report.requester.get_full_name() if report.requester else None,
         })
+
+
+class EnvisionLEMVoidView(APIView):
+    """
+    POST /api/reports/envision/lem/void/
+
+    Void a LEM: soft-deletes the LEMReport row itself, plus every TimeEntry
+    it covers (matched by the LEM's own project + task + date). This makes
+    the LEM number stop showing up in EnvisionLEMSearchView and in the
+    "reuse existing LEM" lookups in EnvisionLEMReportView/EnvisionCostingLEMView,
+    and frees the underlying time entries to be re-entered under a new LEM.
+
+    Required body params:
+        lem_number  (str)  — with or without the FT-/CT- prefix
+
+    Restricted to admins/managers/field_managers (or superusers) within the
+    workspace that owns the LEM's project.
+
+    Caveat: a Costing LEM (CT-...) only stores lem_date as the date range's
+    start date (date_from) — only time entries on that single day are
+    soft-deleted, not the full date_from..date_to range it was reported over.
+    """
+
+    permission_classes = [IsAuthenticated]
+    ELEVATED_ROLES = {"admin", "manager", "field_manager"}
+
+    def post(self, request):
+        raw = str(request.data.get("lem_number", "")).strip()
+        if not raw:
+            return Response({"error": "lem_number is required"}, status=400)
+
+        lem_report = self._find_lem(raw)
+        if not lem_report:
+            return Response({"error": f"No LEM found for number '{raw}'"}, status=404)
+
+        if not lem_report.project_id:
+            return Response(
+                {"error": "This LEM's project no longer exists — cannot identify its time entries."},
+                status=400,
+            )
+
+        workspace = lem_report.project.workspace
+        user = request.user
+        if not user.is_superuser:
+            is_elevated = WorkspaceMember.objects.filter(
+                user=user, workspace=workspace, role__in=self.ELEVATED_ROLES
+            ).exists()
+            if not is_elevated:
+                return Response(
+                    {"error": "You do not have permission to void LEMs in this workspace."},
+                    status=403,
+                )
+
+        entries_qs = TimeEntry.objects.filter(project_id=lem_report.project_id)
+        if lem_report.task_id:
+            entries_qs = entries_qs.filter(task_id=lem_report.task_id)
+        if lem_report.lem_date:
+            day_start, day_end = envision_day_bounds_utc(lem_report.lem_date)
+            entries_qs = entries_qs.filter(start_time__gte=day_start, start_time__lte=day_end)
+
+        entries = list(entries_qs)
+
+        with transaction.atomic():
+            for entry in entries:
+                entry.delete()  # SoftDeleteModel.delete() -> is_deleted=True
+            lem_report.delete()
+
+        return Response({
+            "message": f"LEM {lem_report.lem_number} voided.",
+            "lem_number": lem_report.lem_number,
+            "time_entries_voided": len(entries),
+        })
+
+    def _find_lem(self, raw):
+        """Exact match first, then try the known Envision prefixes."""
+        candidates = [raw]
+        if not raw.startswith(("FT-", "CT-", "LEM-")):
+            candidates += [f"FT-{raw}", f"CT-{raw}"]
+        for candidate in candidates:
+            lem = LEMReport.objects.filter(lem_number=candidate).first()
+            if lem:
+                return lem
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -525,8 +612,9 @@ class EnvisionCostingLEMView(APIView):
         )
         is_new = lem_report is None
         if is_new:
+            # all_objects — a voided LEM's number must never be reused (unique_together).
             last_ct = (
-                LEMReport.objects
+                LEMReport.all_objects
                 .filter(project__workspace=workspace, lem_number__startswith=self.CT_PREFIX)
                 .order_by("-id")
                 .first()
