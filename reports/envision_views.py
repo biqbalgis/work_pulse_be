@@ -1,9 +1,10 @@
 """
 Envision GEO — LEM Report API Views
-  POST /api/reports/envision/fieldTicket_Lem/   — Field Ticket LEM PDF
-  POST /api/reports/envision/costing-lem/        — Costing LEM PDF
-  GET  /api/reports/envision/lem/search/         — Search Field Ticket LEM by number
-  POST /api/reports/envision/lem/void/           — Void a LEM (soft-delete LEM + its time entries)
+  POST /api/reports/envision/fieldTicket_Lem/           — Field Ticket LEM PDF (whole day)
+  POST /api/reports/envision/fieldTicket_Lem/payload/   — Field Ticket LEM PDF (payload entries only)
+  POST /api/reports/envision/costing-lem/                — Costing LEM PDF
+  GET  /api/reports/envision/lem/search/                 — Search Field Ticket LEM by number
+  POST /api/reports/envision/lem/void/                   — Void a LEM (soft-delete LEM + its time entries)
 """
 
 from collections import OrderedDict
@@ -21,7 +22,9 @@ from approvals.models import TimeEntryApproval, TimeEntryApprovalItem
 from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
 from projects.models import Project
 from tasks.models import Task
+from time_entries.field_ticket_views import create_field_ticket_entry
 from time_entries.models import TimeEntry
+from time_entries.serializers import FieldTicketEntrySerializer
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceUser
 from .models import LEMReport
@@ -32,6 +35,106 @@ from .envision_costing_pdf_utils import generate_envision_costing_pdf
 def _address_to_lines(address: str) -> list:
     """Split a comma-separated address string into PDF lines."""
     return [part.strip() for part in (address or "").split(",") if part.strip()]
+
+
+def _build_field_ticket_labour_and_equipment(entries):
+    """Build (labour_rows, equipment_rows, total_cost) for the Field Ticket
+    LEM PDF from a list/queryset of TimeEntry — shared by EnvisionLEMReportView
+    (queries a whole day) and any endpoint that instead passes in only the
+    entries it just created."""
+    # ── Build labour rows ─────────────────────────────────────────────────
+    labour_map = {}
+    for entry in entries:
+        jt_name = entry.job_title.name if entry.job_title else "-"
+        key     = (entry.user_id, getattr(entry.job_title, "id", None))
+
+        if key not in labour_map:
+            labour_map[key] = {
+                "name":  entry.user.get_full_name(),
+                "role":  jt_name,
+                "hours": Decimal("0"),
+                "meals": False,
+                "hotel": False,
+            }
+
+        labour_map[key]["hours"] += Decimal(entry.duration) / 60
+        if entry.meals:
+            labour_map[key]["meals"] = True
+        if entry.hotels:
+            labour_map[key]["hotel"] = True
+
+    labour_rows = [
+        {
+            "name":  row["name"],
+            "role":  row["role"],
+            "hours": str(round(row["hours"], 2)),
+            "meals": "1" if row["meals"] else "0",
+            "hotel": "1" if row["hotel"] else "0",
+        }
+        for row in labour_map.values()
+    ]
+
+    # ── Build equipment rows & total cost (equipment only) ───────────────
+    asset_map  = {}
+    total_cost = Decimal("0")
+
+    for entry in entries:
+        for usage in entry.asset_usages.all():
+            asset = usage.asset
+            cost  = Decimal(usage.cost or 0)
+            total_cost += cost
+
+            if asset.id not in asset_map:
+                asset_map[asset.id] = {
+                    "item":  asset.name,
+                    "hours": Decimal("0"),
+                    "days":  "",
+                    "units": Decimal("0"),
+                    "rate":  Decimal("0"),
+                    "cost":  Decimal("0"),
+                }
+
+            asset_map[asset.id]["cost"] += cost
+
+            if asset.charge_type == "hourly":
+                # quantity_used is the authoritative value — if it wasn't
+                # recorded for this usage, leave it out rather than
+                # guessing from the time entry's duration.
+                if usage.quantity_used is not None:
+                    asset_map[asset.id]["hours"] += Decimal(usage.quantity_used)
+                asset_map[asset.id]["rate"] = Decimal(asset.hourly_rate or 0)
+            else:
+                asset_map[asset.id]["units"] += Decimal(usage.quantity_used or 0)
+                asset_map[asset.id]["rate"]   = Decimal(asset.quantity_rate or 0)
+
+    equipment_rows = []
+    for row in asset_map.values():
+        equipment_rows.append({
+            "item":  row["item"],
+            "hours": str(round(row["hours"], 2)) if row["hours"] else "",
+            "days":  row["days"],
+            "units": str(round(row["units"], 2)) if row["units"] else "",
+            "rate":  f"${row['rate']:,.2f}",
+            "cost":  f"${row['cost']:,.2f}",
+        })
+
+    return labour_rows, equipment_rows, total_cost
+
+
+def _merge_entry_descriptions(entries, override=None):
+    """Merge distinct, non-blank TimeEntry descriptions into one paragraph,
+    unless `override` (e.g. a user-supplied work_description) is given."""
+    if override:
+        return override
+
+    seen       = set()
+    desc_parts = []
+    for e in entries:
+        text = (e.description or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            desc_parts.append(text)
+    return ". ".join(desc_parts) + "." if desc_parts else "N/A"
 
 
 class EnvisionLEMReportView(APIView):
@@ -113,94 +216,8 @@ class EnvisionLEMReportView(APIView):
                 status=404,
             )
 
-        # ── Build labour rows ─────────────────────────────────────────────────
-        labour_map = {}
-        for entry in entries:
-            jt_name = entry.job_title.name if entry.job_title else "-"
-            key     = (entry.user_id, getattr(entry.job_title, "id", None))
-
-            if key not in labour_map:
-                labour_map[key] = {
-                    "name":  entry.user.get_full_name(),
-                    "role":  jt_name,
-                    "hours": Decimal("0"),
-                    "meals": False,
-                    "hotel": False,
-                }
-
-            labour_map[key]["hours"] += Decimal(entry.duration) / 60
-            if entry.meals:
-                labour_map[key]["meals"] = True
-            if entry.hotels:
-                labour_map[key]["hotel"] = True
-
-        labour_rows = [
-            {
-                "name":  row["name"],
-                "role":  row["role"],
-                "hours": str(round(row["hours"], 2)),
-                "meals": "1" if row["meals"] else "0",
-                "hotel": "1" if row["hotel"] else "0",
-            }
-            for row in labour_map.values()
-        ]
-
-        # ── Build equipment rows & total cost (equipment only) ───────────────
-        asset_map  = {}
-        total_cost = Decimal("0")
-
-        for entry in entries:
-            for usage in entry.asset_usages.all():
-                asset = usage.asset
-                cost  = Decimal(usage.cost or 0)
-                total_cost += cost
-
-                if asset.id not in asset_map:
-                    asset_map[asset.id] = {
-                        "item":  asset.name,
-                        "hours": Decimal("0"),
-                        "days":  "",
-                        "units": Decimal("0"),
-                        "rate":  Decimal("0"),
-                        "cost":  Decimal("0"),
-                    }
-
-                asset_map[asset.id]["cost"] += cost
-
-                if asset.charge_type == "hourly":
-                    # quantity_used is the authoritative value — if it wasn't
-                    # recorded for this usage, leave it out rather than
-                    # guessing from the time entry's duration.
-                    if usage.quantity_used is not None:
-                        asset_map[asset.id]["hours"] += Decimal(usage.quantity_used)
-                    asset_map[asset.id]["rate"] = Decimal(asset.hourly_rate or 0)
-                else:
-                    asset_map[asset.id]["units"] += Decimal(usage.quantity_used or 0)
-                    asset_map[asset.id]["rate"]   = Decimal(asset.quantity_rate or 0)
-
-        equipment_rows = []
-        for row in asset_map.values():
-            equipment_rows.append({
-                "item":  row["item"],
-                "hours": str(round(row["hours"], 2)) if row["hours"] else "",
-                "days":  row["days"],
-                "units": str(round(row["units"], 2)) if row["units"] else "",
-                "rate":  f"${row['rate']:,.2f}",
-                "cost":  f"${row['cost']:,.2f}",
-            })
-
-        # ── Merge time entry descriptions ─────────────────────────────────────
-        seen       = set()
-        desc_parts = []
-        for e in entries:
-            text = (e.description or "").strip()
-            if text and text not in seen:
-                seen.add(text)
-                desc_parts.append(text)
-        work_description = (
-            data.get("work_description")
-            or (". ".join(desc_parts) + "." if desc_parts else "N/A")
-        )
+        labour_rows, equipment_rows, total_cost = _build_field_ticket_labour_and_equipment(entries)
+        work_description = _merge_entry_descriptions(entries, data.get("work_description"))
 
         # ── Signature fields ──────────────────────────────────────────────────
         user      = request.user
@@ -289,6 +306,172 @@ class EnvisionLEMReportView(APIView):
             content_type="application/pdf",
         )
 
+
+class EnvisionFieldTicketLEMFromPayloadView(APIView):
+    """
+    POST /api/reports/envision/fieldTicket_Lem/payload/
+
+    Same request body as POST /api/time_entries/field-ticket-entry/
+    (FieldTicketBulkEntryView) — an array of per-employee entries, each
+    carrying its own project/job_title/task/date/start_time/end_time/
+    description/billable/meals/hotels/assets. No other top-level fields.
+
+    Creates those TimeEntry rows exactly like FieldTicketBulkEntryView does,
+    then immediately generates a Field Ticket LEM PDF — but unlike
+    EnvisionLEMReportView (fieldTicket_Lem/, which re-queries and reports on
+    the WHOLE day for the given project/task/date), this LEM's data is built
+    ONLY from the entries created in THIS call. Always assigns a brand-new
+    FT- number — never reuses/merges into the "whole day" LEM that
+    fieldTicket_Lem/ produces for the same project/task/date, so multiple
+    submissions for the same day each get their own distinct field ticket.
+
+    All rows must share the same project, task, and date — a single Field
+    Ticket LEM PDF represents exactly one project/task/day. If any entry
+    fails to validate/create, the whole batch is rolled back (no partial
+    field ticket) and a 400 is returned.
+
+    Because the payload is unchanged from FieldTicketBulkEntryView's bare
+    array, there's no room for client_rep/work_description/signature fields
+    in this request — they're left blank/false. work_description is always
+    auto-built from the created entries' descriptions.
+    """
+
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    FT_DB_PREFIX = "FT-"
+
+    def post(self, request):
+        serializer = FieldTicketEntrySerializer(data=request.data, many=True)
+        serializer.is_valid(raise_exception=True)
+        validated = list(serializer.validated_data)
+
+        if not validated:
+            return Response({"error": "At least one entry is required."}, status=400)
+
+        # All rows must share the same project + task + date — one Field
+        # Ticket LEM PDF represents exactly one project/task/day.
+        first_row  = validated[0]
+        project_id = first_row["project"]
+        task_id    = first_row.get("task")
+        entry_date = first_row["date"]
+
+        if not task_id:
+            return Response({"error": "Each entry must include a task for a Field Ticket LEM."}, status=400)
+
+        for row in validated[1:]:
+            if row["project"] != project_id or row.get("task") != task_id or row["date"] != entry_date:
+                return Response(
+                    {"error": "All entries must share the same project, task, and date."},
+                    status=400,
+                )
+
+        try:
+            project = Project.objects.select_related("client", "workspace").get(id=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found"}, status=404)
+
+        try:
+            task = Task.objects.get(id=task_id, project=project)
+        except Task.DoesNotExist:
+            return Response({"error": "Task not found for this project"}, status=404)
+
+        # All-or-nothing: if any row fails, roll back the whole batch rather
+        # than generate a field ticket that's silently missing an employee.
+        created_entry_ids = []
+        try:
+            with transaction.atomic():
+                for index, row in enumerate(validated):
+                    try:
+                        entry = create_field_ticket_entry(request, row)
+                    except Exception as exc:
+                        raise ValueError(f"Entry {index}: {exc}") from exc
+                    created_entry_ids.append(entry.id)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=400)
+
+        entries = (
+            TimeEntry.objects
+            .filter(id__in=created_entry_ids)
+            .select_related("user", "job_title")
+            .prefetch_related("asset_usages__asset")
+            .order_by("start_time")
+        )
+
+        workspace     = project.workspace
+        pm_info       = project.pm_info or {}
+        pm_name       = pm_info.get("name", "")
+        pm_contact    = pm_info.get("email", "")
+        pm_phone      = pm_info.get("phone", "")
+        address_lines = _address_to_lines(workspace.address or "")
+
+        labour_rows, equipment_rows, total_cost = _build_field_ticket_labour_and_equipment(entries)
+        work_description = _merge_entry_descriptions(entries)
+
+        date_str = entry_date.strftime("%Y-%m-%d")
+
+        # Always a brand-new LEM — never reused/merged with the "whole day" LEM.
+        last_ft = (
+            LEMReport.all_objects
+            .filter(project__workspace=workspace, lem_number__startswith=self.FT_DB_PREFIX)
+            .order_by("-id")
+            .first()
+        )
+        try:
+            last_num = int(last_ft.lem_number.replace(self.FT_DB_PREFIX, "")) if last_ft else 0
+        except ValueError:
+            last_num = 0
+
+        lem_report = LEMReport(
+            requester=request.user,
+            project=project,
+            task=task,
+            lem_date=entry_date,
+            lem_number=f"{self.FT_DB_PREFIX}{last_num + 1:06d}",
+            report_data={},
+        )
+        lem_report.save()
+
+        ft_display_number = lem_report.lem_number.replace(self.FT_DB_PREFIX, "")
+
+        pdf_data = {
+            "lem_number":       ft_display_number,
+            "lem_date":         date_str,
+            "company_address":  address_lines,
+            "project_name":     project.name,
+            "task_name":        task.name,
+            "job_number":       project.job_code or "",
+            "client":           project.client.name if project.client else "",
+            "pm_name":          pm_name,
+            "pm_contact":       pm_contact,
+            "pm_phone":         pm_phone,
+            "labour_rows":      labour_rows,
+            "work_description": work_description,
+            "equipment_rows":   equipment_rows,
+            "total_cost":       f"${total_cost:,.2f}",
+            "client_rep":       "",
+            "sign":             False,
+            "sign_name":        "",
+            "sign_date":        "",
+        }
+
+        lem_report.report_data = pdf_data
+        lem_report.save()
+        # Record exactly these entries — this is the whole point of this
+        # endpoint, so voiding it later only ever touches this submission.
+        lem_report.time_entries.set(entries)
+
+        try:
+            pdf_buffer = generate_envision_lem_pdf(pdf_data)
+        except Exception as exc:
+            lem_report.delete()
+            return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
+
+        return FileResponse(
+            pdf_buffer,
+            as_attachment=True,
+            filename=f"Envision_LEM_{ft_display_number}_{date_str}.pdf",
+            content_type="application/pdf",
+        )
 
 
 class EnvisionLEMSearchView(APIView):
