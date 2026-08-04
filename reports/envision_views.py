@@ -155,6 +155,12 @@ class EnvisionLEMReportView(APIView):
         sign             (bool)
         sign_name        (str)
         sign_date        (str)   — YYYY-MM-DD
+
+    Reuses the same FT- number for repeat calls on the same project+task+
+    date, refreshing report_data from ALL of that day's entries each time.
+    Unaffected by EnvisionFieldTicketLEMFromPayloadView (fieldTicket_Lem/
+    payload/), which uses its own separate FTF- number series — the two
+    prefixes can never collide (lem_number__startswith distinguishes them).
     """
 
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
@@ -321,9 +327,12 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
     EnvisionLEMReportView (fieldTicket_Lem/, which re-queries and reports on
     the WHOLE day for the given project/task/date), this LEM's data is built
     ONLY from the entries created in THIS call. Always assigns a brand-new
-    FT- number — never reuses/merges into the "whole day" LEM that
-    fieldTicket_Lem/ produces for the same project/task/date, so multiple
-    submissions for the same day each get their own distinct field ticket.
+    number from its OWN "FTF-" (Field Ticket Field) series — a completely
+    separate numbering sequence from fieldTicket_Lem/'s "FT-" numbers, so
+    the two can never collide or overwrite each other for the same
+    project/task/date, and creating/voiding FTF- LEMs never affects FT-
+    numbering (or vice versa). Multiple submissions for the same day each
+    get their own distinct FTF- field ticket.
 
     All rows must share the same project, task, and date — a single Field
     Ticket LEM PDF represents exactly one project/task/day. If any entry
@@ -338,7 +347,7 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
 
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
 
-    FT_DB_PREFIX = "FT-"
+    FTF_DB_PREFIX = "FTF-"
 
     def post(self, request):
         serializer = FieldTicketEntrySerializer(data=request.data, many=True)
@@ -409,15 +418,17 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
 
         date_str = entry_date.strftime("%Y-%m-%d")
 
-        # Always a brand-new LEM — never reused/merged with the "whole day" LEM.
-        last_ft = (
+        # Always a brand-new LEM in this endpoint's OWN "FTF-" number series —
+        # a separate sequence from fieldTicket_Lem/'s "FT-" numbers (the two
+        # prefixes can never match each other's lem_number__startswith).
+        last_ftf = (
             LEMReport.all_objects
-            .filter(project__workspace=workspace, lem_number__startswith=self.FT_DB_PREFIX)
+            .filter(project__workspace=workspace, lem_number__startswith=self.FTF_DB_PREFIX)
             .order_by("-id")
             .first()
         )
         try:
-            last_num = int(last_ft.lem_number.replace(self.FT_DB_PREFIX, "")) if last_ft else 0
+            last_num = int(last_ftf.lem_number.replace(self.FTF_DB_PREFIX, "")) if last_ftf else 0
         except ValueError:
             last_num = 0
 
@@ -426,12 +437,12 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
             project=project,
             task=task,
             lem_date=entry_date,
-            lem_number=f"{self.FT_DB_PREFIX}{last_num + 1:06d}",
+            lem_number=f"{self.FTF_DB_PREFIX}{last_num + 1:06d}",
             report_data={},
         )
         lem_report.save()
 
-        ft_display_number = lem_report.lem_number.replace(self.FT_DB_PREFIX, "")
+        ft_display_number = lem_report.lem_number.replace(self.FTF_DB_PREFIX, "")
 
         pdf_data = {
             "lem_number":       ft_display_number,
@@ -477,24 +488,26 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
 class EnvisionLEMSearchView(APIView):
     """
     Look up a saved Envision Field Ticket LEM by number.
-    Accepts the display number (digits only) or the full FT- prefixed form.
+    Searches the FTF- (Field Ticket Field, from EnvisionFieldTicketLEMFromPayloadView)
+    series only — not the FT- whole-day series from EnvisionLEMReportView.
+    Accepts the display number (digits only) or the full FTF- prefixed form.
 
     GET /api/reports/envision/lem/search/?lem_number=000001
-    GET /api/reports/envision/lem/search/?lem_number=FT-000001
+    GET /api/reports/envision/lem/search/?lem_number=FTF-000001
     """
 
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
 
-    FT_PREFIX = "FT-"
+    FTF_PREFIX = "FTF-"
 
     def get(self, request):
         raw = request.query_params.get("lem_number", "").strip()
         if not raw:
             return Response({"error": "lem_number query parameter is required"}, status=400)
 
-        # Normalise: strip FT- prefix if caller included it, then re-add
-        digits = raw.replace(self.FT_PREFIX, "").strip()
-        db_key = f"{self.FT_PREFIX}{digits}"
+        # Normalise: strip FTF- prefix if caller included it, then re-add
+        digits = raw.replace(self.FTF_PREFIX, "").strip()
+        db_key = f"{self.FTF_PREFIX}{digits}"
 
         try:
             report = LEMReport.objects.get(lem_number=db_key)
@@ -528,12 +541,15 @@ class EnvisionLEMVoidView(APIView):
     rows and TimeEntryApprovalItem rows, and any TimeEntryApproval left with
     no items after that. None of these show up in reports once their
     TimeEntry is gone. This makes the LEM number stop showing up in
-    EnvisionLEMSearchView and in the "reuse existing LEM" lookups in
-    EnvisionLEMReportView/EnvisionCostingLEMView, and frees its entries to
-    be re-entered under a new LEM.
+    EnvisionLEMSearchView and frees its entries to be re-entered under a
+    new LEM.
+
+    ONLY works on FTF- (Field Ticket Field, from
+    EnvisionFieldTicketLEMFromPayloadView) numbers — FT- (whole-day) and
+    CT- (Costing) LEMs cannot be voided through this endpoint.
 
     Required body params:
-        lem_number  (str)  — with or without the FT-/CT- prefix
+        lem_number  (str)  — with or without the FTF- prefix
 
     Restricted to admins/managers/field_managers (or superusers) within the
     workspace that owns the LEM's project.
@@ -624,16 +640,20 @@ class EnvisionLEMVoidView(APIView):
         approval.total_hours = Decimal(total_minutes) / Decimal("60")
         approval.save(update_fields=["total_hours"])
 
+    FTF_PREFIX = "FTF-"
+
     def _find_lem(self, raw):
-        """Exact match first, then try the known Envision prefixes."""
-        candidates = [raw]
-        if not raw.startswith(("FT-", "CT-", "LEM-")):
-            candidates += [f"FT-{raw}", f"CT-{raw}"]
-        for candidate in candidates:
-            lem = LEMReport.objects.filter(lem_number=candidate).first()
-            if lem:
-                return lem
-        return None
+        """Only matches FTF- (Field Ticket Field / payload) LEMs — strips
+        whichever known prefix (if any) was passed in, then looks up FTF-
+        only. FT-/CT-/LEM- numbers are out of scope for this endpoint, even
+        if that prefix is what was actually passed."""
+        digits = raw
+        for prefix in (self.FTF_PREFIX, "FT-", "CT-", "LEM-"):
+            if digits.startswith(prefix):
+                digits = digits[len(prefix):]
+                break
+        db_key = f"{self.FTF_PREFIX}{digits.strip()}"
+        return LEMReport.objects.filter(lem_number=db_key).first()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
