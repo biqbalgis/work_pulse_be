@@ -15,3 +15,7 @@
 /staticfiles/
 /static/
 /.env
+/export_excel.py
+*.pyc
+__pycache__/
+*.pyc

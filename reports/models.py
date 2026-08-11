@@ -2,9 +2,11 @@
 from django.contrib.auth import get_user_model
 from django.db import models
 
+from core.models import SoftDeleteModel
+
 User = get_user_model()
 
-class LEMReport(models.Model):
+class LEMReport(SoftDeleteModel):
     lem_number = models.CharField(max_length=20, editable=False)
     requester  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     project    = models.ForeignKey("projects.Project", on_delete=models.SET_NULL, null=True, blank=True)
@@ -13,17 +15,27 @@ class LEMReport(models.Model):
     report_data = models.JSONField(default=dict)
     created_at  = models.DateTimeField(auto_now_add=True)
 
+    # Exactly which TimeEntry rows this LEM's report_data was built from —
+    # set (not just added to) every time the LEM is (re)generated, so voiding
+    # only touches entries actually captured in the latest snapshot, not
+    # every entry that happens to match the same project/task/date.
+    time_entries = models.ManyToManyField(
+        "time_entries.TimeEntry", blank=True, related_name="lem_reports",
+    )
+
     class Meta:
         unique_together = [['project', 'lem_number']]
 
     def save(self, *args, **kwargs):
         if not self.lem_number:
-            # Generate sequential number per project
+            # Generate sequential number per project. Uses all_objects (not
+            # objects) so a voided/soft-deleted LEM's number is never reused —
+            # reusing it would collide with the unique_together constraint.
             if self.project:
-                last_entry = LEMReport.objects.filter(
+                last_entry = LEMReport.all_objects.filter(
                     project=self.project
                 ).order_by("-id").first()
-                
+
                 if last_entry and last_entry.lem_number.startswith("LEM-"):
                     try:
                         # Extract number from LEM-001 format

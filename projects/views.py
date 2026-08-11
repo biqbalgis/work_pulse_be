@@ -75,6 +75,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         from workspaces.models import Workspace
+        from tasks.models import Task
 
         user = self.request.user
         if user.is_superuser:
@@ -94,6 +95,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
         instance = serializer.save(workspace=workspace, created_by=user)
         log_activity(user, "CREATE", "Project", instance.id, request=self.request)
+
+        # Every new project gets a default "General" task — creation only, not on edit.
+        Task.objects.create(project=instance, name="General", created_by=user)
 
 
     def perform_destroy(self, instance):

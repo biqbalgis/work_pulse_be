@@ -786,6 +786,10 @@ class DailyWorkReportView(APIView):
         # Save complete JSON to DB
         lem_report.report_data = response_data
         lem_report.save()
+        # Record exactly which entries this snapshot was built from — voiding
+        # this LEM later only touches these, not every entry that happens to
+        # match the same project/date.
+        lem_report.time_entries.set(time_entries)
 
         return Response(response_data, status=status.HTTP_200_OK)
 
@@ -916,6 +920,10 @@ class LEMReportGenerationView(APIView):
         
         lem_report.report_data = result
         lem_report.save()
+        # Record exactly which entries this snapshot was built from — voiding
+        # this LEM later only touches these, not every entry that happens to
+        # match the same project/date range.
+        lem_report.time_entries.set(all_time_entries)
 
         # pdf_buffer = generate_lem_pdf(result)
 
@@ -1017,6 +1025,10 @@ class LEMDailyReportView(APIView):
 
         lem_report.report_data = result
         lem_report.save()
+        # Record exactly which entries this snapshot was built from — voiding
+        # this LEM later only touches these, not every entry that happens to
+        # match the same project/date.
+        lem_report.time_entries.set(entries)
 
         if request.data.get("generate_pdf"):
             pdf_buffer = generate_daily_lem_pdf(result)
@@ -1144,6 +1156,11 @@ class LEMCostingReportView(APIView):
         # Save report data
         lem_report.report_data = result
         lem_report.save()
+        # Record exactly which entries this snapshot was built from — voiding
+        # this LEM later only touches these, not every entry that happens to
+        # match the same project/date (weekly OT lookback entries excluded —
+        # those are only used for the RT/OT calculation, not part of this LEM).
+        lem_report.time_entries.set(daily_entries)
 
         # Generate PDF
         pdf_buffer = generate_costing_lem_pdf(result)

@@ -20,13 +20,24 @@ class AssetUsageOutputSerializer(serializers.ModelSerializer):
 
 class AssetUsageInputSerializer(serializers.Serializer):
     asset_id = serializers.UUIDField()
+    # hours_used and quantity_used both map to the same AssetUsage.quantity_used
+    # column — the frontend sends whichever applies to the asset's charge_type.
+    # See resolve_quantity_used() below.
     quantity_used = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    hours_used = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+
+
+def resolve_quantity_used(item):
+    """Pick whichever of quantity_used/hours_used was actually sent — both
+    are stored in AssetUsage.quantity_used, whichever is present wins."""
+    quantity_used = item.get("quantity_used")
+    return quantity_used if quantity_used is not None else item.get("hours_used")
 
 class TimeEntrySerializer(serializers.ModelSerializer):
     # Output serializer for GET
     assets = AssetUsageOutputSerializer(source="asset_usages", many=True, read_only=True)
 
-    # Input serializer for POST/PATCH
+    # Input serializer for POST/PATCH — not a model field, handled in perform_create/perform_update
     asset_inputs = AssetUsageInputSerializer(many=True, write_only=True, required=False)
 
     class Meta:
@@ -40,6 +51,16 @@ class TimeEntrySerializer(serializers.ModelSerializer):
             "id","user","workspace","duration","hourly_rate","cost",
             "created_at","created_by","assets"
         ]
+
+    def create(self, validated_data):
+        # asset_inputs is not a model field — it's consumed by perform_create
+        # after save(). Strip it here so objects.create() doesn't choke on it.
+        validated_data.pop("asset_inputs", None)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop("asset_inputs", None)
+        return super().update(instance, validated_data)
 
 class BulkTimeEntrySerializer(serializers.Serializer):
     date = serializers.DateField(format="%Y-%m-%d")
