@@ -46,6 +46,14 @@ class TaskViewSet(viewsets.ModelViewSet):
             self.pagination_class = None
         return super().list(request, *args, **kwargs)
 
+    def update(self, request, *args, **kwargs):
+        # Treat PUT the same as PATCH — the frontend sends partial payloads
+        # (e.g. just {"name": "..."}), and Task.project is a required field
+        # on the serializer, so a strict full-object PUT would 400 on every
+        # partial edit.
+        kwargs['partial'] = True
+        return super().update(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         user = self.request.user
         instance = serializer.save()
