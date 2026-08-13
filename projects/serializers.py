@@ -49,29 +49,72 @@ class ProjectSerializer(serializers.ModelSerializer):
         return attrs
 
 class JobTitleSerializer(serializers.ModelSerializer):
+    workspace_name = serializers.CharField(source='workspace.name', read_only=True)
+
     class Meta:
         model = JobTitle
-        fields = ['id', 'name']
+        fields = ['id', 'workspace', 'workspace_name', 'name']
+        # workspace is always set server-side — never accepted from the payload
+        read_only_fields = ['workspace']
+
+    def validate(self, attrs):
+        from workspaces.models import WorkspaceMember, Workspace
+
+        user = self.context['request'].user
+
+        # Resolve workspace for name-uniqueness check only (same pattern as
+        # ProjectSerializer.validate for job_code). Superusers pass workspace
+        # in request.data (not in validated_data since it's read-only).
+        if user.is_superuser:
+            workspace_id = self.context['request'].data.get('workspace')
+            workspace = None
+            if workspace_id:
+                try:
+                    workspace = Workspace.objects.get(id=workspace_id)
+                except Workspace.DoesNotExist:
+                    raise serializers.ValidationError({"workspace": "Workspace not found."})
+            elif self.instance:
+                workspace = self.instance.workspace
+        else:
+            member = WorkspaceMember.objects.filter(user=user).first()
+            workspace = member.workspace if member else (self.instance.workspace if self.instance else None)
+
+        name = attrs.get('name', self.instance.name if self.instance else None)
+        if name and workspace:
+            qs = JobTitle.objects.filter(workspace=workspace, name__iexact=name)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({
+                    'name': f"Job title '{name}' already exists in this workspace."
+                })
+
+        return attrs
 
 
 class ProjectRoleSerializer(serializers.ModelSerializer):
     job_title_name = serializers.CharField(source='job_title.name', read_only=True)
     project_name = serializers.CharField(source='project.name', read_only=True)
-    
+    workspace_name = serializers.CharField(source='workspace.name', read_only=True)
+
     class Meta:
         model = ProjectRole
-        fields = ['id', 'project', 'project_name', 'job_title', 'job_title_name', 'hourly_rate']
+        fields = ['id', 'workspace', 'workspace_name', 'project', 'project_name', 'job_title', 'job_title_name', 'hourly_rate']
+        # workspace is always derived from project — never accepted from the payload
+        read_only_fields = ['workspace']
 
 
 class UserProjectRoleSerializer(serializers.ModelSerializer):
     user_full_name = serializers.CharField(source="user.get_full_name", read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
     job_title_name = serializers.CharField(source="job_title.name", read_only=True)
-    workspace_name = serializers.CharField(source="project.workspace.name", read_only=True)
+    workspace_name = serializers.CharField(source="workspace.name", read_only=True)
     user_uuid = serializers.UUIDField(source="user.id", read_only=True)
     class Meta:
         model = UserProjectRole
-        fields = ['id', 'user', 'user_uuid', 'project', 'job_title', 'hourly_rate','user_full_name','project_name','job_title_name', 'workspace_name']
+        fields = ['id', 'workspace', 'user', 'user_uuid', 'project', 'job_title', 'hourly_rate','user_full_name','project_name','job_title_name', 'workspace_name']
+        # workspace is always derived from project — never accepted from the payload
+        read_only_fields = ['workspace']
 
 
 

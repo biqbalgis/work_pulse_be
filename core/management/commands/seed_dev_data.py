@@ -114,19 +114,24 @@ class Command(BaseCommand):
     def create_tasks_titles(self):
         TITLES = ["CEO", "COO", "CTO", "Developer", "Surveyor", "GIS Analyst", "PM", "Team Lead", "Technician"]
 
-
-        self.titles = []
-        for title in TITLES:
-            t, _ = JobTitle.objects.get_or_create(name=title)
-            self.titles.append(t)
+        # JobTitle.name is unique per workspace, not globally — seed a
+        # separate set of titles for each workspace rather than one shared
+        # global pool.
+        self.titles_by_workspace = {}
+        for ws in self.workspaces:
+            titles = []
+            for title in TITLES:
+                t, _ = JobTitle.objects.get_or_create(workspace=ws, name=title)
+                titles.append(t)
+            self.titles_by_workspace[ws.id] = titles
 
     # --------------------- ASSIGN TITLES + USERS TO PROJECTS ---------------------
     def assign_roles_to_projects(self):
         self.project_roles = []
 
         for p in self.projects:
-            # Pick unique random titles for this project
-            available_titles = random.sample(self.titles, random.randint(3, 6))
+            # Pick unique random titles for this project, from its own workspace's pool
+            available_titles = random.sample(self.titles_by_workspace[p.workspace_id], random.randint(3, 6))
 
             for title in available_titles:
 

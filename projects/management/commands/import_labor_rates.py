@@ -1,13 +1,27 @@
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 import openpyxl
 from projects.models import LaborRate, JobTitle
+from workspaces.models import Workspace
 from decimal import Decimal
 
 class Command(BaseCommand):
     help = 'Import Labor Rates from labor_rates.xlsx'
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--workspace', required=True,
+            help='Workspace ID (or exact name) to import/create job titles under — '
+                 'JobTitle.name is unique per workspace, not globally.',
+        )
+
     def handle(self, *args, **options):
+        workspace_ref = options['workspace']
+        workspace = Workspace.objects.filter(id=workspace_ref).first() or \
+            Workspace.objects.filter(name=workspace_ref).first()
+        if not workspace:
+            raise CommandError(f"Workspace not found: {workspace_ref!r}")
+
         file_path = "labor_rates.xlsx"
         try:
             wb = openpyxl.load_workbook(file_path)
@@ -61,8 +75,8 @@ class Command(BaseCommand):
         # Now save to DB
         count = 0
         for (job_title_name, condition), costs in data_map.items():
-            # Find or Create Job Title
-            job_title, _ = JobTitle.objects.get_or_create(name=job_title_name)
+            # Find or Create Job Title, scoped to the given workspace
+            job_title, _ = JobTitle.objects.get_or_create(workspace=workspace, name=job_title_name)
 
             # Update or Create Labor Rate
             LaborRate.objects.update_or_create(

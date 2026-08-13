@@ -38,7 +38,11 @@ class Project(SoftDeleteModel):
 
 class JobTitle(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=255, unique=True)
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="job_titles")
+    name = models.CharField(max_length=255)
+
+    class Meta:
+        unique_together = ("workspace", "name")
 
     def __str__(self):
         return self.name
@@ -46,6 +50,7 @@ class JobTitle(SoftDeleteModel):
 
 class ProjectRole(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="project_roles")
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="project_roles")
     job_title = models.ForeignKey(JobTitle, on_delete=models.CASCADE)
     hourly_rate = models.DecimalField(max_digits=10, decimal_places=2)
@@ -53,11 +58,17 @@ class ProjectRole(SoftDeleteModel):
     class Meta:
         unique_together = ("project", "job_title")
 
+    def save(self, *args, **kwargs):
+        if not self.workspace_id and self.project_id:
+            self.workspace_id = self.project.workspace_id
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.project.name} - {self.job_title.name}"
 
 class UserProjectRole(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="user_project_roles")
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="project_roles")
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="user_roles")
     job_title = models.ForeignKey(JobTitle, on_delete=models.CASCADE)
@@ -65,6 +76,11 @@ class UserProjectRole(SoftDeleteModel):
 
     class Meta:
         unique_together = ("user", "project", "job_title")
+
+    def save(self, *args, **kwargs):
+        if not self.workspace_id and self.project_id:
+            self.workspace_id = self.project.workspace_id
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.user.email} → {self.job_title.name} @ {self.project.name}"
