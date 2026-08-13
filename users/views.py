@@ -5,13 +5,60 @@ from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
+from rest_framework.views import APIView
+
 from workspaces.models import WorkspaceMember, Workspace
-from .serializers import UserSerializer, EmailTokenObtainPairSerializer, RegisterSerializer
+from .serializers import UserSerializer, EmailTokenObtainPairSerializer, RegisterSerializer, _workspace_logo_url
 from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser
 from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
 from core.utils.logger import log_activity, log_error
 
 User = get_user_model()
+
+
+class MeView(APIView):
+    """
+    GET /api/me/
+
+    Returns the logged-in user's profile plus their workspace(s) — same
+    shape as the "user" object in the /login/ response, including each
+    workspace's logo URL. Usable with just the JWT access token, so the
+    frontend can re-fetch this (e.g. on page reload) without logging in
+    again.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        memberships = WorkspaceMember.objects.filter(user=user).select_related("workspace")
+
+        if memberships.exists():
+            workspace_data = [
+                {
+                    "id": str(m.workspace.id),
+                    "name": m.workspace.name,
+                    "role": m.role,
+                    "logo": _workspace_logo_url(m.workspace, request),
+                }
+                for m in memberships
+            ]
+        else:
+            workspace_data = {
+                "id": None,
+                "name": None,
+                "role": "superuser" if user.is_superuser else None,
+                "logo": None,
+            }
+
+        return Response({
+            "id": str(user.id),
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "is_superuser": user.is_superuser,
+            "workspace": workspace_data,
+        })
 
 class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer

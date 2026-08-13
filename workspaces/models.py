@@ -5,6 +5,11 @@ from users.models import User
 from work_pulse_be import settings
 import uuid
 
+
+def workspace_logo_upload_path(instance, filename):
+    return f"workspace_logos/{instance.id}/{filename}"
+
+
 class Workspace(SoftDeleteModel):
     OVERTIME_POLICY_CHOICES = (
         ('standard', 'Standard (per-project daily RT/OT table, e.g. Stamsh)'),
@@ -14,6 +19,7 @@ class Workspace(SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     address = models.CharField(max_length=255, blank=True, null=True)
+    logo = models.ImageField(upload_to=workspace_logo_upload_path, null=True, blank=True)
     overtime_policy = models.CharField(
         max_length=20,
         choices=OVERTIME_POLICY_CHOICES,

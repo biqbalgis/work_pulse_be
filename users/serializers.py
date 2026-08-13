@@ -6,6 +6,13 @@ from workspaces.models import Workspace, WorkspaceMember
 from .models import User
 
 
+def _workspace_logo_url(workspace, request=None):
+    """Absolute URL for a workspace's logo, or None if it has none."""
+    if not workspace.logo:
+        return None
+    return request.build_absolute_uri(workspace.logo.url) if request else workspace.logo.url
+
+
 class UserSerializer(serializers.ModelSerializer):
     workspace = serializers.PrimaryKeyRelatedField(
         queryset=Workspace.objects.all(),
@@ -36,9 +43,10 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
             raise serializers.ValidationError("This account is deactivated.")
 
         # 🔍 Find workspace membership
-        memberships = WorkspaceMember.objects.filter(user=user)
+        memberships = WorkspaceMember.objects.filter(user=user).select_related("workspace")
         workspace_data = None
         role = None
+        request = self.context.get("request")
 
         if memberships.exists():
             # Pick the first workspace for now (support multiple later if needed)
@@ -47,7 +55,8 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
                 workspace_data.append({
                     "id": str(m.workspace.id),
                     "name": m.workspace.name,
-                    "role": m.role
+                    "role": m.role,
+                    "logo": _workspace_logo_url(m.workspace, request),
                 })
 
 
@@ -57,6 +66,7 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
                 "id": None,
                 "name": None,
                 "role": "superuser" if user.is_superuser else None,
+                "logo": None,
             }
 
         # ✅ Generate JWT tokens
