@@ -1,9 +1,11 @@
 from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from workspaces.models import Workspace, WorkspaceMember
-from .models import User
+from .models import PasswordResetToken, User
 
 
 def _workspace_logo_url(workspace, request=None):
@@ -124,3 +126,57 @@ class RegisterSerializer(serializers.ModelSerializer):
         user = User.objects.create_user(**validated_data)
         WorkspaceMember.objects.create(workspace=workspace, user=user, role=role)
         return user
+
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class ResetPasswordConfirmSerializer(serializers.Serializer):
+    token = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+    confirm_password = serializers.CharField(write_only=True, required=False)
+
+    INVALID_TOKEN_MESSAGE = "This link is invalid or has expired. Please request a new one."
+
+    def validate(self, attrs):
+        confirm_password = attrs.get("confirm_password")
+        if confirm_password is not None and confirm_password != attrs["password"]:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+
+        try:
+            reset_token = PasswordResetToken.objects.select_related("user").get(token=attrs["token"])
+        except PasswordResetToken.DoesNotExist:
+            raise serializers.ValidationError({"token": self.INVALID_TOKEN_MESSAGE})
+
+        if not reset_token.is_valid:
+            raise serializers.ValidationError({"token": self.INVALID_TOKEN_MESSAGE})
+
+        try:
+            validate_password(attrs["password"], user=reset_token.user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"password": exc.messages})
+
+        attrs["reset_token"] = reset_token
+        return attrs
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+    confirm_password = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+
+        user = self.context["request"].user
+        if not user.check_password(attrs["old_password"]):
+            raise serializers.ValidationError({"old_password": "Current password is incorrect."})
+
+        try:
+            validate_password(attrs["new_password"], user=user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": exc.messages})
+
+        return attrs

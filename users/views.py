@@ -1,19 +1,42 @@
 from rest_framework import viewsets, permissions, serializers, status, generics
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.utils import timezone
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from rest_framework.views import APIView
 
 from workspaces.models import WorkspaceMember, Workspace
-from .serializers import UserSerializer, EmailTokenObtainPairSerializer, RegisterSerializer, _workspace_logo_url
+from .emails import send_password_changed_email, send_password_reset_email
+from .models import PasswordResetToken
+from .serializers import (
+    ChangePasswordSerializer,
+    EmailTokenObtainPairSerializer,
+    ForgotPasswordSerializer,
+    RegisterSerializer,
+    ResetPasswordConfirmSerializer,
+    UserSerializer,
+    _workspace_logo_url,
+)
 from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser
 from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
 from core.utils.logger import log_activity, log_error
 
 User = get_user_model()
+
+
+def _blacklist_all_tokens_for(user, request=None):
+    """Force logout everywhere by blacklisting every outstanding JWT for this user."""
+    try:
+        tokens = OutstandingToken.objects.filter(user=user)
+        for token in tokens:
+            BlacklistedToken.objects.get_or_create(token=token)
+    except Exception as e:
+        log_error(request, e, {"context": f"Error blacklisting tokens for {user}: {e}"})
 
 
 class MeView(APIView):
@@ -182,3 +205,96 @@ class RegisterView(generics.CreateAPIView):
             log_activity(user, "CREATE", "User", new_user.id, request=self.request)
         else:
             log_activity(new_user, "REGISTER", "User", new_user.id, request=self.request)
+
+
+class ForgotPasswordThrottle(AnonRateThrottle):
+    scope = "forgot_password"
+
+
+class ForgotPasswordView(APIView):
+    """
+    POST /api/auth/forgot-password/  { "email": "..." }
+
+    Always returns the same generic response whether or not the email
+    matches an account, so this endpoint can't be used to enumerate
+    registered users. Throttled per-IP so it can't be used to spam
+    someone's inbox with reset emails.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ForgotPasswordThrottle]
+    GENERIC_MESSAGE = "If an account exists for that email, we've sent password reset instructions."
+
+    def post(self, request):
+        serializer = ForgotPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+
+        user = User.objects.filter(email__iexact=email, is_active=True, is_deleted=False).first()
+        if user:
+            ttl_minutes = settings.PASSWORD_RESET_TIMEOUT_MINUTES
+            reset_token = PasswordResetToken.issue_for_user(user, ttl_minutes=ttl_minutes)
+            reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password?token={reset_token.token}"
+
+            try:
+                send_password_reset_email(user, reset_url, ttl_minutes)
+                log_activity(user, "PASSWORD_RESET_REQUEST", "User", user.id, request=request)
+            except Exception as e:
+                log_error(request, e, {"context": f"Failed to send password reset email to {email}"})
+
+        return Response({"message": self.GENERIC_MESSAGE}, status=status.HTTP_200_OK)
+
+
+class ResetPasswordConfirmView(APIView):
+    """POST /api/auth/reset-password/  { "token": "...", "password": "...", "confirm_password": "..." }"""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = ResetPasswordConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        reset_token = serializer.validated_data["reset_token"]
+        user = reset_token.user
+
+        user.set_password(serializer.validated_data["password"])
+        user.save(update_fields=["password"])
+
+        reset_token.used_at = timezone.now()
+        reset_token.save(update_fields=["used_at"])
+
+        _blacklist_all_tokens_for(user, request=request)
+        log_activity(user, "PASSWORD_RESET", "User", user.id, request=request)
+
+        try:
+            send_password_changed_email(user)
+        except Exception as e:
+            log_error(request, e, {"context": f"Failed to send password-changed email to {user.email}"})
+
+        return Response(
+            {"message": "Your password has been reset. You can now log in with your new password."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class ChangePasswordView(APIView):
+    """PUT /api/auth/change-password/  { old_password, new_password, confirm_password } — requires auth."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def put(self, request):
+        serializer = ChangePasswordSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        user.set_password(serializer.validated_data["new_password"])
+        user.save(update_fields=["password"])
+
+        log_activity(user, "PASSWORD_CHANGE", "User", user.id, request=request)
+
+        try:
+            send_password_changed_email(user)
+        except Exception as e:
+            log_error(request, e, {"context": f"Failed to send password-changed email to {user.email}"})
+
+        return Response({"message": "Password changed successfully."}, status=status.HTTP_200_OK)

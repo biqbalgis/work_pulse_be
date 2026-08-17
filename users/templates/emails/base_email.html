@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>{% block title %}WorkPulse{% endblock %}</title>
+</head>
+<body style="margin:0; padding:0; background-color:#F4F6FA; -webkit-text-size-adjust:100%; text-size-adjust:100%;">
+  <span style="display:none; font-size:1px; color:#F4F6FA; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;">{% block preheader %}{% endblock %}</span>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F6FA;">
+    <tr>
+      <td align="center" style="padding:32px 16px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px; background-color:#FFFFFF; border-radius:12px; overflow:hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="background-color:#112D4E; padding:28px 32px; text-align:center; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+              <span style="font-size:20px; font-weight:700; color:#FFFFFF; letter-spacing:0.3px;">WorkPulse</span>
+            </td>
+          </tr>
+          <!-- Body -->
+          <tr>
+            <td style="padding:36px 32px; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+              {% block content %}{% endblock %}
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="padding:20px 32px; background-color:#F4F6FA; text-align:center; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+              <p style="margin:0; font-size:12px; line-height:18px; color:rgba(17,45,78,0.6);">
+                You're receiving this email because it's linked to a WorkPulse account.<br>
+                &copy; {% now "Y" %} WorkPulse. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

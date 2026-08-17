@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     'reports',
     'user_permissions',
     'corsheaders',
+    'msgraphbackend',
 
 ]
 
@@ -105,6 +106,9 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'core.utils.pagination.StandardPagination',
     'PAGE_SIZE': 20,
+    'DEFAULT_THROTTLE_RATES': {
+        'forgot_password': '5/hour',
+    },
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
     ],
@@ -128,6 +132,26 @@ SIMPLE_JWT = {
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
+# Your Azure AD application keys
+MSGRAPH_CLIENT_ID     = config('MSGRAPH_CLIENT_ID')
+MSGRAPH_TENANT_ID     = config('MSGRAPH_TENANT_ID')
+MSGRAPH_CLIENT_SECRET = config('MSGRAPH_CLIENT_SECRET')
+
+EMAIL_BACKEND = "msgraphbackend.MSGraphBackend"
+
+# The specific M365 mailbox you want the reset links to come from
+MSGRAPH_USER_ID = config('MSGRAPH_USER_ID')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL')
+
+# Backend's own domain (also used for CSRF_TRUSTED_ORIGINS below) — NOT the frontend.
+domain = config('domain', default=None)
+
+# Base URL of the frontend SPA (a different domain from the backend above), used to build
+# links inside emails (password reset, etc.).
+FRONTEND_URL = config('FRONTEND_URL', default='https://envision.workpulse.ca')
+PASSWORD_RESET_TIMEOUT_MINUTES = config('PASSWORD_RESET_TIMEOUT_MINUTES', default=60, cast=int)
+
+
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8000",
@@ -143,7 +167,6 @@ CORS_ALLOWED_ORIGINS = [
 
 # Security settings for HTTPS
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-domain = config('domain', default=None)
 if domain:
     CSRF_TRUSTED_ORIGINS = [f'https://{domain}']
 else:
