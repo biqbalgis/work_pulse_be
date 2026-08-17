@@ -136,8 +136,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",  # Vite default port
     "http://127.0.0.1:5173",
-    "https://admin.workpulse.ca",
-    "https://workpulse.ca",
+    "https://envsys.workpulse.ca",
+    "https://envision.workpulse.ca",
 
 ]
 
@@ -147,7 +147,7 @@ domain = config('domain', default=None)
 if domain:
     CSRF_TRUSTED_ORIGINS = [f'https://{domain}']
 else:
-    CSRF_TRUSTED_ORIGINS = ["https://workpulse.ca","https://admin.workpulse.ca","http://127.0.0.1:8000"]
+    CSRF_TRUSTED_ORIGINS = ["https://envision.workpulse.ca","https://envsys.workpulse.ca","http://127.0.0.1:8000"]
 
 CORS_ALLOW_CREDENTIALS = True
 
