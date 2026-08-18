@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
@@ -160,37 +161,76 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         """
-        Soft-delete a user: revoke access everywhere and remove them from
-        every project/workspace assignment, but never touch any historical
-        record. TimeEntry/TimeEntryApproval/etc. dereference `.user` via
-        Django's unfiltered base manager (not the soft-delete-filtered
-        `objects` manager), so past entries and reports keep resolving the
-        user and their frozen historical rate/cost data untouched — nothing
-        else needs to change for those to keep working.
+        Soft-delete a user: revoke login access everywhere, but only remove
+        them from the ONE workspace this delete was scoped to (a user
+        belongs to a single workspace; deleting them from a different
+        workspace requires switching into that workspace first) — never
+        touch any historical record. TimeEntry/TimeEntryApproval/etc.
+        dereference `.user` via Django's unfiltered base manager (not the
+        soft-delete-filtered `objects` manager), so past entries and reports
+        keep resolving the user and their frozen historical rate/cost data
+        untouched — nothing else needs to change for those to keep working.
         """
+        admin = self.request.user
+        workspace_id = self.request.query_params.get('workspace')
+
+        if not workspace_id and not admin.is_superuser:
+            # Scope to the workspace this admin actually shares with the
+            # target user, rather than every WorkspaceMember row that user
+            # happens to have.
+            admin_workspace_ids = get_user_workspace_ids(admin)
+            workspace_id = WorkspaceMember.objects.filter(
+                user=instance, workspace_id__in=admin_workspace_ids
+            ).values_list('workspace_id', flat=True).first()
+
         with transaction.atomic():
             instance.is_active = False
             instance.is_deleted = True
             instance.deleted_at = timezone.now()
             instance.save(update_fields=['is_active', 'is_deleted', 'deleted_at'])
 
-            # "Removed from all projects" — soft-delete their role assignments so
-            # they stop appearing in every field-ticket/timesheet user picker,
-            # which already filters out soft-deleted UserProjectRole rows.
-            UserProjectRole.objects.filter(user=instance).update(
-                is_deleted=True, deleted_at=timezone.now()
-            )
-            WorkspaceMember.objects.filter(user=instance).update(
-                is_deleted=True, deleted_at=timezone.now()
-            )
+            # "Removed from all projects" — scoped to this one workspace only,
+            # so this can never reach into a different workspace the user
+            # might belong to. Stops them appearing in every field-ticket/
+            # timesheet user picker, which already filters out soft-deleted
+            # UserProjectRole rows.
+            if workspace_id:
+                UserProjectRole.objects.filter(user=instance, workspace_id=workspace_id).update(
+                    is_deleted=True, deleted_at=timezone.now()
+                )
+                WorkspaceMember.objects.filter(user=instance, workspace_id=workspace_id).update(
+                    is_deleted=True, deleted_at=timezone.now()
+                )
 
             _blacklist_all_tokens_for(instance, request=self.request)
 
         log_activity(self.request.user, "DELETE", "User", instance.id, request=self.request)
 
+    @action(
+        detail=True, methods=['post'], url_path='reactivate',
+        permission_classes=[permissions.IsAuthenticated, IsSuperUser],
+    )
+    def reactivate(self, request, id=None):
+        """
+        Undo a soft-delete. Restricted to Django superusers only — a
+        workspace admin can delete a user but cannot bring them back on
+        their own, so removal isn't trivially reversible by whoever removed
+        them. Does not restore their old workspace/project assignments;
+        those must be re-added explicitly since the user may return with a
+        different role or to a different workspace.
+        """
+        user = get_object_or_404(User.all_objects, id=id)
+        user.is_active = True
+        user.is_deleted = False
+        user.deleted_at = None
+        user.save(update_fields=['is_active', 'is_deleted', 'deleted_at'])
+
+        log_activity(request.user, "REACTIVATE", "User", user.id, request=request)
+        return Response({"status": "User has been reactivated."}, status=status.HTTP_200_OK)
+
     # ✅ Endpoint to deactivate or activate a user
     @action(detail=True, methods=['post'], url_path='toggle-active')
-    def toggle_active(self, request, pk=None):
+    def toggle_active(self, request, id=None):
         user = self.get_object()
         user.is_active = not user.is_active
         user.save()
