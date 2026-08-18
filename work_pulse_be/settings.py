@@ -167,7 +167,7 @@ domain = config('domain', default=None)
 
 # Base URL of the frontend SPA (a different domain from the backend above), used to build
 # links inside emails (password reset, etc.).
-FRONTEND_URL = config('FRONTEND_URL', default='https://envision.workpulse.ca')
+FRONTEND_URL = config('FRONTEND_URL', default='https://dev.workpulse.ca')
 PASSWORD_RESET_TIMEOUT_MINUTES = config('PASSWORD_RESET_TIMEOUT_MINUTES', default=60, cast=int)
 
 
@@ -179,8 +179,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",  # Vite default port
     "http://127.0.0.1:5173",
-    "https://envsys.workpulse.ca",
-    "https://envision.workpulse.ca",
+    "https://test.workpulse.ca",
+    "https://dev.workpulse.ca",
 
 ]
 
@@ -189,7 +189,7 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 if domain:
     CSRF_TRUSTED_ORIGINS = [f'https://{domain}']
 else:
-    CSRF_TRUSTED_ORIGINS = ["https://envision.workpulse.ca","https://envsys.workpulse.ca","http://127.0.0.1:8000"]
+    CSRF_TRUSTED_ORIGINS = ["https://test.workpulse.ca","https://dev.workpulse.ca","http://127.0.0.1:8000"]
 
 CORS_ALLOW_CREDENTIALS = True
 
