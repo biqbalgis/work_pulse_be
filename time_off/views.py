@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions, serializers
+from rest_framework import viewsets, permissions, serializers, filters
 from .models import TimeOffType, TimeOffRequest
 from .serializers import TimeOffTypeSerializer, TimeOffRequestSerializer
 from workspaces.permissions import IsWorkspaceUser
@@ -28,6 +28,9 @@ class TimeOffTypeViewSet(viewsets.ModelViewSet):
 class TimeOffRequestViewSet(viewsets.ModelViewSet):
     serializer_class = TimeOffRequestSerializer
     permission_classes = [permissions.IsAuthenticated, IsWorkspaceUser]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['user__first_name', 'user__last_name', 'type__name', 'status', 'reason']
+    ordering_fields = ['user__first_name', 'start_date', 'total_days', 'type__name', 'status']
 
     def paginate_queryset(self, queryset):
         if self.request.query_params.get('pagination') == 'false':

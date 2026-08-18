@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions, serializers
+from rest_framework import viewsets, permissions, serializers, filters
 from .models import Client
 from .serializers import ClientSerializer
 from core.utils.logger import log_activity
@@ -8,6 +8,9 @@ from workspaces.permissions import IsWorkspaceManager, IsSuperUser
 class ClientViewSet(viewsets.ModelViewSet):
     serializer_class = ClientSerializer
     permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'workspace__name', 'contact_info']
+    ordering_fields = ['name', 'workspace__name', 'contact_info', 'created_at']
 
     def paginate_queryset(self, queryset):
         if self.request.query_params.get('pagination') == 'false':

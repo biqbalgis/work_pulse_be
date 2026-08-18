@@ -1,5 +1,5 @@
 from rest_framework.response import Response
-from rest_framework import viewsets, permissions, serializers,status
+from rest_framework import viewsets, permissions, serializers, status, filters
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from django.db import transaction, IntegrityError
@@ -37,6 +37,9 @@ def _ensure_user_in_workspace(user, workspace):
 
 class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'job_code', 'client__name', 'workspace__name']
+    ordering_fields = ['name', 'job_code', 'client__name', 'workspace__name', 'billable', 'created_at']
 
     def paginate_queryset(self, queryset):
         if self.request.query_params.get('pagination') == 'false':
@@ -196,6 +199,9 @@ class JobTitleViewSet(viewsets.ModelViewSet):
 class ProjectRoleViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectRoleSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['project__name', 'job_title__name']
+    ordering_fields = ['project__name', 'job_title__name', 'hourly_rate']
 
     def get_queryset(self):
         user = self.request.user
@@ -455,6 +461,9 @@ class UserProjectRoleViewSet(viewsets.ModelViewSet):
     serializer_class = UserProjectRoleSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = None
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['project__name', 'user__first_name', 'user__last_name', 'job_title__name']
+    ordering_fields = ['project__name', 'user__first_name', 'job_title__name', 'hourly_rate']
 
     def get_queryset(self):
         request_user = self.request.user

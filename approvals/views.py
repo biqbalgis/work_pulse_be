@@ -1,10 +1,12 @@
 from datetime import datetime
 
-from rest_framework import viewsets, status
+from django.db.models import Case, CharField, F, Value, When
+from rest_framework import filters, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from core.utils.pagination import StandardPagination
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceUser
 from .models import TimeEntryApproval, TimeEntryApprovalItem
@@ -13,13 +15,31 @@ from time_entries.models import TimeEntry
 from .utils import can_approve, calculate_rt_ot_and_cost
 
 
+class ApprovalPagination(StandardPagination):
+    # Members fetch their own full history in one shot (no page picker on that
+    # side), so this needs a much higher ceiling than the standard page cap.
+    max_page_size = 1000
+
+
 class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
     serializer_class = TimeEntryApprovalSerializer
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
+    pagination_class = ApprovalPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['user__first_name', 'user__last_name', 'user__email', 'status']
+    ordering_fields = ['user__first_name', 'start_date', 'total_hours', 'status', 'entry_type']
 
     def get_queryset(self):
         user = self.request.user
-        queryset = TimeEntryApproval.objects.filter(is_deleted=False).select_related("user", "workspace")
+        queryset = TimeEntryApproval.objects.filter(is_deleted=False).select_related("user", "workspace").annotate(
+            # "day" vs "week" has no stored column — it's derived from whether
+            # start_date == end_date — so annotate it to make the Type column sortable.
+            entry_type=Case(
+                When(start_date=F('end_date'), then=Value('day')),
+                default=Value('week'),
+                output_field=CharField(),
+            )
+        )
 
         if not user.is_superuser:
             workspace_ids = WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
@@ -35,39 +55,45 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
 
         return queryset
 
+    def _serialize_approval_summary(self, approval, request):
+        items = approval.items.select_related("time_entry__project")
+        metrics = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
+
+        return {
+            "id": approval.id,
+            "employee": {
+                "id": approval.user.id,
+                "name": approval.user.get_full_name()
+            },
+            "period": {
+                "start_date": approval.start_date,
+                "end_date": approval.end_date,
+                "type": "day" if approval.start_date == approval.end_date else "week"
+            },
+            "entries_count": items.count(),
+            "hours": {
+                "total": metrics["total_hours"],
+                "regular": metrics["rt_hours"],
+                "overtime": metrics["ot_hours"]
+            },
+            "cost": {
+                "total": metrics["total_cost"]
+            },
+            "status": approval.status,
+            "can_approve": can_approve(request.user, approval.user, approval.workspace)
+        }
+
     # ========== EMPLOYEE SUBMITS WEEK ==========
     def list(self, request, *args, **kwargs):
-        approvals = self.get_queryset()
+        queryset = self.filter_queryset(self.get_queryset())
 
-        data = []
-        for approval in approvals:
-            items = approval.items.select_related("time_entry__project")
-            metrics = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
+        page = self.paginate_queryset(queryset)
+        approvals = page if page is not None else queryset
 
-            data.append({
-                "id": approval.id,
-                "employee": {
-                    "id": approval.user.id,
-                    "name": approval.user.get_full_name()
-                },
-                "period": {
-                    "start_date": approval.start_date,
-                    "end_date": approval.end_date,
-                    "type": "day" if approval.start_date == approval.end_date else "week"
-                },
-                "entries_count": items.count(),
-                "hours": {
-                    "total": metrics["total_hours"],
-                    "regular": metrics["rt_hours"],
-                    "overtime": metrics["ot_hours"]
-                },
-                "cost": {
-                    "total": metrics["total_cost"]
-                },
-                "status": approval.status,
-                "can_approve": can_approve(request.user, approval.user, approval.workspace)
-            })
+        data = [self._serialize_approval_summary(approval, request) for approval in approvals]
 
+        if page is not None:
+            return self.get_paginated_response(data)
         return Response(data)
 
     @action(detail=False, methods=["post"], url_path="submit")
