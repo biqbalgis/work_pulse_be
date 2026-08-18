@@ -41,7 +41,7 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         user = authenticate(username=email, password=password)
         if not user:
             raise serializers.ValidationError("Invalid email or password.")
-        if not user.is_active:
+        if not user.is_active or user.is_deleted:
             raise serializers.ValidationError("This account is deactivated.")
 
         # 🔍 Find workspace membership

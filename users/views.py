@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.utils import timezone
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
@@ -10,6 +11,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from rest_framework.views import APIView
 
+from projects.models import UserProjectRole
 from workspaces.models import WorkspaceMember, Workspace
 from .emails import send_password_changed_email, send_password_reset_email
 from .models import PasswordResetToken
@@ -155,6 +157,36 @@ class UserViewSet(viewsets.ModelViewSet):
 
         # Log activity
         log_activity(creator, "CREATE", "User", new_user.id, request=self.request)
+
+    def perform_destroy(self, instance):
+        """
+        Soft-delete a user: revoke access everywhere and remove them from
+        every project/workspace assignment, but never touch any historical
+        record. TimeEntry/TimeEntryApproval/etc. dereference `.user` via
+        Django's unfiltered base manager (not the soft-delete-filtered
+        `objects` manager), so past entries and reports keep resolving the
+        user and their frozen historical rate/cost data untouched — nothing
+        else needs to change for those to keep working.
+        """
+        with transaction.atomic():
+            instance.is_active = False
+            instance.is_deleted = True
+            instance.deleted_at = timezone.now()
+            instance.save(update_fields=['is_active', 'is_deleted', 'deleted_at'])
+
+            # "Removed from all projects" — soft-delete their role assignments so
+            # they stop appearing in every field-ticket/timesheet user picker,
+            # which already filters out soft-deleted UserProjectRole rows.
+            UserProjectRole.objects.filter(user=instance).update(
+                is_deleted=True, deleted_at=timezone.now()
+            )
+            WorkspaceMember.objects.filter(user=instance).update(
+                is_deleted=True, deleted_at=timezone.now()
+            )
+
+            _blacklist_all_tokens_for(instance, request=self.request)
+
+        log_activity(self.request.user, "DELETE", "User", instance.id, request=self.request)
 
     # ✅ Endpoint to deactivate or activate a user
     @action(detail=True, methods=['post'], url_path='toggle-active')

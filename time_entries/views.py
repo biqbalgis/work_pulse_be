@@ -227,7 +227,12 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
             duration_hours_decimal = Decimal(duration_seconds / 3600).quantize(Decimal("0.01"))
 
         if project and job_title and end_time:
-            upr = UserProjectRole.objects.filter(
+            # all_objects, not objects: editing an old entry must still resolve the
+            # rate that was actually in effect even if that assignment has since
+            # been soft-deleted (e.g. the user was removed from the project) —
+            # otherwise this would either block the edit or silently substitute a
+            # different rate than the entry's real history.
+            upr = UserProjectRole.all_objects.filter(
                 user=entry.user, project=project, job_title=job_title
             ).first()
             if upr and upr.hourly_rate is not None:
@@ -722,7 +727,9 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
                 if not project_id or not job_title_id:
                     raise ValidationError("project and job_title are required.")
 
-                upr = UserProjectRole.objects.filter(
+                # all_objects: preserve the historical rate even if this assignment
+                # has since been soft-deleted (see TimeEntryViewSet.perform_update).
+                upr = UserProjectRole.all_objects.filter(
                     user=entry.user, project_id=project_id, job_title_id=job_title_id
                 ).first()
 
