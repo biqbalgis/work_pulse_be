@@ -40,6 +40,10 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # Must come before any middleware that reads/writes the response body,
+    # so compression is applied last (Django's own recommended placement) —
+    # otherwise every dashboard/report JSON response ships uncompressed.
+    'django.middleware.gzip.GZipMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'core.middleware.activity_middleware.ActivityLoggingMiddleware',
     'core.middleware.error_logging_middleware.ErrorLoggingMiddleware',

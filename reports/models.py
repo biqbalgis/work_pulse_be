@@ -25,6 +25,12 @@ class LEMReport(SoftDeleteModel):
 
     class Meta:
         unique_together = [['project', 'lem_number']]
+        indexes = [
+            # Dashboard field-tickets report filters by project + lem_date range.
+            models.Index(fields=['project', 'lem_date'], name='lemreport_project_date_idx'),
+            # Several views filter on lem_number__startswith (FT-/FTF-/CT- series).
+            models.Index(fields=['lem_number'], name='lemreport_lem_number_idx'),
+        ]
 
     def save(self, *args, **kwargs):
         if not self.lem_number:

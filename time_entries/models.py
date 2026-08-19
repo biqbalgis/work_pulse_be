@@ -26,5 +26,13 @@ class TimeEntry(SoftDeleteModel):
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_timeentry')
 
+    class Meta:
+        indexes = [
+            # Every report/dashboard query filters by workspace + a start_time
+            # range; without this it's a full table scan once TimeEntry grows.
+            models.Index(fields=['workspace', 'start_time'], name='timeentry_workspace_start_idx'),
+            models.Index(fields=['user', 'start_time'], name='timeentry_user_start_idx'),
+        ]
+
     def __str__(self):
         return f"{self.user} - {self.project}"

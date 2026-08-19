@@ -17,7 +17,7 @@ rather than re-deriving it from project/date alone.
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from django.db.models import Sum
+from django.db.models import Count, Max, Sum
 from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.exceptions import ValidationError
@@ -90,8 +90,9 @@ class DashboardSummaryView(APIView):
         week_qs = TimeEntry.objects.filter(
             workspace_id__in=workspace_ids, start_time__date__range=[start, end], is_deleted=False,
         )
-        total_minutes = week_qs.aggregate(total=Sum("duration"))["total"] or 0
-        total_entries = week_qs.count()
+        week_totals = week_qs.aggregate(total_minutes=Sum("duration"), total_entries=Count("id"))
+        total_minutes = week_totals["total_minutes"] or 0
+        total_entries = week_totals["total_entries"] or 0
         active_projects = Project.objects.filter(
             workspace_id__in=workspace_ids, is_active=True, is_deleted=False,
         ).count()
@@ -119,18 +120,24 @@ class DashboardSummaryView(APIView):
         members = WorkspaceMember.objects.filter(
             workspace_id__in=workspace_ids, is_deleted=False, user__is_deleted=False, user__is_active=True,
         ).select_related("user")
+        inactive_members = [m for m in members if m.user_id not in active_recently]
+
+        # One aggregated query for every inactive member's last entry, instead
+        # of one query per member.
+        last_entry_by_user = {
+            row["user_id"]: row["last"]
+            for row in TimeEntry.objects.filter(
+                user_id__in=[m.user_id for m in inactive_members],
+                workspace_id__in=workspace_ids,
+                is_deleted=False,
+            ).values("user_id").annotate(last=Max("start_time"))
+        }
 
         inactive_users = []
-        for m in members:
-            if m.user_id in active_recently:
-                continue
-            last_entry = (
-                TimeEntry.objects.filter(user_id=m.user_id, workspace_id__in=workspace_ids, is_deleted=False)
-                .order_by("-start_time")
-                .first()
-            )
-            if last_entry:
-                days = (timezone.now().date() - last_entry.start_time.date()).days
+        for m in inactive_members:
+            last_start = last_entry_by_user.get(m.user_id)
+            if last_start:
+                days = (timezone.now().date() - last_start.date()).days
                 status = f"No entries in {days} days"
             else:
                 status = "Never logged time"
