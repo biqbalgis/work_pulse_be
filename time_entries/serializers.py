@@ -121,6 +121,7 @@ class BulkTimeEntryOutputSerializer(serializers.ModelSerializer):
     end_date = serializers.SerializerMethodField()
     start_time = serializers.SerializerMethodField()
     end_time = serializers.SerializerMethodField()
+    lem_numbers = serializers.SerializerMethodField()
 
     class Meta:
         model = TimeEntry
@@ -139,11 +140,15 @@ class BulkTimeEntryOutputSerializer(serializers.ModelSerializer):
             "billable",
             "meals",
             "hotels",
+            "lem_numbers",
         ]
 
     def get_user(self, obj):
         full_name = obj.user.get_full_name().strip()
         return full_name or obj.user.username or obj.user.email or str(obj.user_id)
+
+    def get_lem_numbers(self, obj):
+        return list(obj.lem_reports.values_list("lem_number", flat=True).distinct())
 
     def _local_dt(self, dt):
         if dt is None:

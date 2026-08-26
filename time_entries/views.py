@@ -384,15 +384,25 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
         return False
 
-    def perform_destroy(self, instance):
-        employee_full_name = instance.user.get_full_name().strip() or f"{instance.user.first_name} {instance.user.last_name}".strip() or getattr(instance.user, "username", "")
-        employee_name = self._normalize_text(employee_full_name)
-        job_title = self._normalize_text(instance.job_title.name if instance.job_title else "")
-        entry_dates = self._entry_dates(instance)
+    def _can_override_delete_restrictions(self, user, workspace):
+        if user.is_superuser:
+            return True
+        return WorkspaceMember.objects.filter(
+            user=user, workspace=workspace, role__in=["admin", "field_manager"]
+        ).exists()
 
-        lem_reports = LEMReport.objects.filter(project=instance.project)
-        if any(self._lem_contains_entry(lem_report.report_data, entry_dates, employee_name, job_title) for lem_report in lem_reports):
-            raise ValidationError("This time entry is already part of a LEM and cannot be deleted.")
+    def perform_destroy(self, instance):
+        can_override = self._can_override_delete_restrictions(self.request.user, instance.workspace)
+
+        if not can_override:
+            employee_full_name = instance.user.get_full_name().strip() or f"{instance.user.first_name} {instance.user.last_name}".strip() or getattr(instance.user, "username", "")
+            employee_name = self._normalize_text(employee_full_name)
+            job_title = self._normalize_text(instance.job_title.name if instance.job_title else "")
+            entry_dates = self._entry_dates(instance)
+
+            lem_reports = LEMReport.objects.filter(project=instance.project)
+            if any(self._lem_contains_entry(lem_report.report_data, entry_dates, employee_name, job_title) for lem_report in lem_reports):
+                raise ValidationError("This time entry is already part of a LEM and cannot be deleted.")
 
         approvals = list(
             TimeEntryApproval.objects.filter(items__time_entry=instance).distinct()
@@ -636,7 +646,7 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
         if project_id_param:
             queryset = queryset.filter(project_id=project_id_param)
 
-        return queryset
+        return queryset.prefetch_related("lem_reports")
 
     def list(self, request):
         queryset = self._filter_queryset(self.get_queryset(), request.query_params)
