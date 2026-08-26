@@ -1,0 +1,61 @@
+
+
+services:
+  django:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: gunicorn work_pulse_be.wsgi:application --bind 0.0.0.0:8000
+    expose:
+      - 8000
+    env_file:
+      - .env
+    volumes:
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    depends_on:
+      - wait-for-db
+
+  wait-for-db:
+    image: alpine
+    env_file:
+      - .env
+    command: >
+      sh -c "
+        apk add --no-cache netcat-openbsd;
+        echo Waiting for database...;
+        while ! nc -z $DB_HOST ${DB_PORT:-5432}; do
+          sleep 2;
+        done;
+        echo Database is up;
+      "
+
+  nginx:
+    image: nginx:1.25-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+      - /etc/letsencrypt:/etc/letsencrypt
+      - /var/www/certbot:/var/www/certbot
+    environment:
+      - NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/conf.d
+      - domain=${domain}
+    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+    depends_on:
+      - django
+
+  certbot:
+    image: certbot/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt
+      - /var/www/certbot:/var/www/certbot
+
+volumes:
+  static_volume:
+  media_volume:

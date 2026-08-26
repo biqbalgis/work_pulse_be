@@ -1,3 +1,62 @@
+
+from django.contrib.auth import get_user_model
 from django.db import models
 
-# Create your models here.
+from core.models import SoftDeleteModel
+
+User = get_user_model()
+
+class LEMReport(SoftDeleteModel):
+    lem_number = models.CharField(max_length=20, editable=False)
+    requester  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    project    = models.ForeignKey("projects.Project", on_delete=models.SET_NULL, null=True, blank=True)
+    task       = models.ForeignKey("tasks.Task", on_delete=models.SET_NULL, null=True, blank=True)
+    lem_date   = models.DateField(null=True, blank=True)
+    report_data = models.JSONField(default=dict)
+    created_at  = models.DateTimeField(auto_now_add=True)
+
+    # Exactly which TimeEntry rows this LEM's report_data was built from —
+    # set (not just added to) every time the LEM is (re)generated, so voiding
+    # only touches entries actually captured in the latest snapshot, not
+    # every entry that happens to match the same project/task/date.
+    time_entries = models.ManyToManyField(
+        "time_entries.TimeEntry", blank=True, related_name="lem_reports",
+    )
+
+    class Meta:
+        unique_together = [['project', 'lem_number']]
+        indexes = [
+            # Dashboard field-tickets report filters by project + lem_date range.
+            models.Index(fields=['project', 'lem_date'], name='lemreport_project_date_idx'),
+            # Several views filter on lem_number__startswith (FT-/FTF-/CT- series).
+            models.Index(fields=['lem_number'], name='lemreport_lem_number_idx'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.lem_number:
+            # Generate sequential number per project. Uses all_objects (not
+            # objects) so a voided/soft-deleted LEM's number is never reused —
+            # reusing it would collide with the unique_together constraint.
+            if self.project:
+                last_entry = LEMReport.all_objects.filter(
+                    project=self.project
+                ).order_by("-id").first()
+
+                if last_entry and last_entry.lem_number.startswith("LEM-"):
+                    try:
+                        # Extract number from LEM-001 format
+                        last_number = int(last_entry.lem_number.split('-')[1])
+                        new_number = last_number + 1
+                    except (ValueError, IndexError):
+                        new_number = 1
+                else:
+                    new_number = 1
+            else:
+                # If no project, use global counter
+                new_number = 1
+            
+            self.lem_number = f"LEM-{new_number:03d}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.lem_number

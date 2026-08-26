@@ -1,18 +1,29 @@
-from django.urls import path
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.routers import DefaultRouter
+from rest_framework_simplejwt.views import TokenRefreshView
+
 from .views import (
-    CustomTokenObtainPairView, RegisterView, ChangePasswordView,
-    logout_view, user_profile_view, update_user_profile_view
+    ChangePasswordView,
+    EmailLoginView,
+    ForgotPasswordView,
+    MeView,
+    RegisterView,
+    ResetPasswordConfirmView,
+    UserViewSet,
 )
+from django.urls import path, include
+router = DefaultRouter()
+router.register(r'users', UserViewSet, basename='user')
 
 urlpatterns = [
-    # Authentication URLs
-    path('login/', CustomTokenObtainPairView.as_view(), name='login'),
+    # 🔹 JWT Authentication endpoints
     path('register/', RegisterView.as_view(), name='register'),
-    path('logout/', logout_view, name='logout'),
-    path('change-password/', ChangePasswordView.as_view(), name='change_password'),
-    
-    # User profile URLs
-    path('profile/', user_profile_view, name='user_profile'),
-    path('profile/update/', update_user_profile_view, name='update_user_profile'),
+    path('login/', EmailLoginView.as_view(), name='token_obtain_pair'),
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('me/', MeView.as_view(), name='me'),
+    # 🔹 Password reset / change
+    path('auth/forgot-password/', ForgotPasswordView.as_view(), name='forgot_password'),
+    path('auth/reset-password/', ResetPasswordConfirmView.as_view(), name='reset_password_confirm'),
+    path('auth/change-password/', ChangePasswordView.as_view(), name='change_password'),
+    # 🔹 Include all viewset routes
+    path('', include(router.urls)),
 ]
