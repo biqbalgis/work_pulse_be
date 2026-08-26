@@ -6,11 +6,14 @@ Table columns:
   Name/Asset | Date | Work Type | Task | Description | Hrs/Units | Rate | Total
 
 Layout:
-  - Labour rows grouped by job_title/Work Type ONLY (all employees doing that
-    Work Type share one group) → one subtotal row per Work Type, showing both
-    total hours and total cost across every employee in that group
-  - Asset rows → Asset Total row
+  - Labour rows grouped by the linked asset's name ONLY (job titles play no
+    part in this report — every row comes from a TimeEntry+AssetUsage pair;
+    entries with no linked asset are excluded entirely) → one subtotal row
+    per asset, showing both total hours/units and total cost
   - Grand Total row
+  - "asset_rows"/"asset_total" below are always empty — kept only so this
+    generator needs no changes; every asset usage is folded into
+    labour_groups above instead of a separate Asset section.
 
 Expected `data` dict shape:
 {
@@ -26,7 +29,7 @@ Expected `data` dict shape:
     "pm_phone":         "403-902-1221",
     "labour_groups": [
         {
-            "job_title": "PC",
+            "job_title": "UAV",   # despite the key name, this is the asset's name
             "entries": [
                 {"employee": "Tyson Bancroft", "date": "May 20, 2026", "task": "Bridge Deck Survey",
                  "description": "Orientation", "hours": "4", "rate": "150", "total": "600"},
@@ -37,12 +40,8 @@ Expected `data` dict shape:
         },
         ...
     ],
-    "asset_rows": [
-        {"name": "UAV", "date": "May 21, 2026",
-         "hours_units": "1", "rate": "250", "total": "250"},
-        ...
-    ],
-    "asset_total":  "250",
+    "asset_rows": [],
+    "asset_total":  "0",
     "grand_total":  "1,200",
     "client_rep":   "",
     "sign":         False,

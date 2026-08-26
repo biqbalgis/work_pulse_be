@@ -9,10 +9,10 @@ Table columns (matches the PDF exactly):
 Layout:
   - Header block: Project / Task / Job Number / Client on the left,
     PM / Contact / Phone on the right, LEM No. / Date on the far right.
-  - Labour rows grouped by job_title/Work Type ONLY → one subtotal row per
-    Work Type (hours + cost across every employee in that group).
-  - Asset rows → Asset Total row.
-  - Grand Total row.
+  - Labour rows grouped by the linked asset's name ONLY (job titles play no
+    part in this report) → one subtotal row per asset.
+  - Grand Total row. There is no separate Asset section — every asset usage
+    is folded into the labour rows above.
   - Footer: Client Rep + signature line.
 """
 

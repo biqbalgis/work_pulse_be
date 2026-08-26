@@ -695,6 +695,13 @@ class _EnvisionCostingLEMDataMixin:
     LEM prefix: CT- (Costing Ticket), workspace-wide sequential.
     Same project + task + date_from reuses the existing LEM number, but the
     report content is always rebuilt from current data — never served from cache.
+
+    Rows are driven entirely by AssetUsage — job titles play no part in this
+    report. Each row is one (TimeEntry, AssetUsage) pair; an entry with no
+    linked asset contributes nothing, an entry linked to several assets
+    contributes one row per asset. Work Type/grouping/subtotals are the
+    linked asset's name, and Rate/Total are always recomputed from
+    Hrs-Units × the asset's own rate.
     """
 
     CT_PREFIX = "CT-"
@@ -775,22 +782,59 @@ class _EnvisionCostingLEMDataMixin:
                 status=404,
             ), None
 
-        # ── Build labour groups (keyed by job_title/Work Type only — one total per Work Type, not per user) ──
-        labour_map   = OrderedDict()
-        grand_total  = Decimal("0")
+        # ── Build labour groups from asset usage — Work Type is the linked
+        # asset's name, never job_title (job titles play no part in this
+        # report). An entry with no linked AssetUsage contributes no row;
+        # an entry linked to several assets contributes one row per asset,
+        # each using that AssetUsage's own quantity_used (never the entry's
+        # full duration, so hours aren't double-counted across rows). Rate
+        # and Total are always recomputed from Hrs/Units × the asset's own
+        # rate, never trusted from a stored AssetUsage.cost value. Grouping
+        # and subtotals are keyed by asset name — the "job_title" dict key
+        # below is reused as-is (holding the asset name) purely so the PDF
+        # and Excel renderers, which only treat it as a label string, need
+        # no changes.
+        asset_usage_pairs = [
+            (entry, usage)
+            for entry in entries_qs
+            for usage in entry.asset_usages.all()
+        ]
+        asset_usage_pairs.sort(
+            key=lambda pair: (pair[1].asset.name.lower(), utc_to_envision_local(pair[0].start_time))
+        )
 
-        for entry in entries_qs:
-            key        = getattr(entry.job_title, "id", None)
-            emp_name   = entry.user.get_full_name() or entry.user.email
-            jt_name    = entry.job_title.name if entry.job_title else "—"
-            task_name  = entry.task.name if entry.task else ""
-            hours      = Decimal(entry.duration or 0) / 60
-            rate       = Decimal(entry.hourly_rate or 0)
-            line_total = round(hours * rate, 2)
+        if not asset_usage_pairs:
+            return Response(
+                {"error": "No asset usage found for the given project and date range."},
+                status=404,
+            ), None
 
+        labour_map  = OrderedDict()
+        grand_total = Decimal("0")
+        included_entry_ids = set()
+
+        for entry, usage in asset_usage_pairs:
+            asset     = usage.asset
+            emp_name  = entry.user.get_full_name() or entry.user.email
+            task_name = entry.task.name if entry.task else ""
+
+            # quantity_used is the authoritative Hrs/Units value when set;
+            # otherwise fall back to the entry's own duration.
+            if usage.quantity_used is not None:
+                hrs_units = Decimal(usage.quantity_used)
+            else:
+                hrs_units = Decimal(entry.duration or 0) / 60
+
+            if asset.charge_type == "hourly":
+                rate = Decimal(asset.hourly_rate or 0)
+            else:
+                rate = Decimal(asset.quantity_rate or 0)
+            line_total = round(hrs_units * rate, 2)
+
+            key = asset.id
             if key not in labour_map:
                 labour_map[key] = {
-                    "job_title":   jt_name,
+                    "job_title":   asset.name,
                     "entries":     [],
                     "hours_total": Decimal("0"),
                     "subtotal":    Decimal("0"),
@@ -801,13 +845,14 @@ class _EnvisionCostingLEMDataMixin:
                 "date":        utc_to_envision_local(entry.start_time).strftime("%b %d, %Y"),
                 "task":        task_name,
                 "description": (entry.description or "").strip(),
-                "hours":       _fmt_money(round(hours, 2)),
+                "hours":       _fmt_money(round(hrs_units, 2)),
                 "rate":        _fmt_money(rate),
                 "total":       _fmt_money(line_total),
             })
-            labour_map[key]["hours_total"] += hours
+            labour_map[key]["hours_total"] += hrs_units
             labour_map[key]["subtotal"]    += line_total
             grand_total += line_total
+            included_entry_ids.add(entry.id)
 
         labour_groups = []
         for grp in labour_map.values():
@@ -818,42 +863,10 @@ class _EnvisionCostingLEMDataMixin:
                 "subtotal":    _fmt_money(grp["subtotal"]),
             })
 
-        # ── Build asset rows (sorted by asset name, then date) ────────────────
-        asset_usage_pairs = [
-            (entry, usage)
-            for entry in entries_qs
-            for usage in entry.asset_usages.all()
-        ]
-        asset_usage_pairs.sort(
-            key=lambda pair: (pair[1].asset.name.lower(), utc_to_envision_local(pair[0].start_time))
-        )
-
+        # No separate Asset section any more — every asset usage is folded
+        # directly into labour_groups above.
         asset_rows  = []
         asset_total = Decimal("0")
-
-        for entry, usage in asset_usage_pairs:
-            asset      = usage.asset
-            cost       = Decimal(usage.cost or 0)
-            asset_total += cost
-
-            # quantity_used is the authoritative value for both charge
-            # types — leave blank rather than guessing from duration.
-            hrs_units = _fmt_money(usage.quantity_used) if usage.quantity_used is not None else ""
-
-            if asset.charge_type == "hourly":
-                rate_val = _fmt_money(Decimal(asset.hourly_rate or 0))
-            else:
-                rate_val = _fmt_money(Decimal(asset.quantity_rate or 0))
-
-            asset_rows.append({
-                "name":       asset.name,
-                "date":       utc_to_envision_local(entry.start_time).strftime("%b %d, %Y"),
-                "hours_units": hrs_units,
-                "rate":       rate_val,
-                "total":      _fmt_money(cost),
-            })
-
-        grand_total += asset_total
 
         # ── Reuse the CT LEM number for this project+task+date_from, or assign a new one ──
         lem_report = (
@@ -932,8 +945,9 @@ class _EnvisionCostingLEMDataMixin:
         lem_report.save()
         # Record exactly which entries this snapshot was built from — voiding
         # this LEM later only touches these, not every entry that happens to
-        # match the same project/task/date range.
-        lem_report.time_entries.set(entries_qs)
+        # match the same project/task/date range. Only entries that actually
+        # contributed a row above (i.e. had a linked AssetUsage) are included.
+        lem_report.time_entries.set(entries_qs.filter(id__in=included_entry_ids))
 
         return None, {
             "data":       pdf_data,
