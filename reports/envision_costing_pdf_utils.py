@@ -80,7 +80,7 @@ GRAND_FG    = colors.white
 from reportlab.lib.units import inch
 
 COL_WIDTHS = [
-    1.35 * inch,   # Name / Asset
+    1.35 * inch,   # Name
     0.75 * inch,   # Date
     0.80 * inch,   # Work Type
     0.80 * inch,   # Task
@@ -119,7 +119,7 @@ def _build_costing_table(data):
 
     # ── Header row ────────────────────────────────────────────────────────────
     rows = [[
-        _pc("NAME / ASSET",  bold=True, align=TA_CENTER, color=HEADER_FG),
+        _pc("NAME",  bold=True, align=TA_CENTER, color=HEADER_FG),
         _pc("DATE",          bold=True, align=TA_CENTER, color=HEADER_FG),
         _pc("WORK TYPE",     bold=True, align=TA_CENTER, color=HEADER_FG),
         _pc("TASK",          bold=True, align=TA_CENTER, color=HEADER_FG),

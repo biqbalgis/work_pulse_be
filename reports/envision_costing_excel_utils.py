@@ -42,7 +42,7 @@ RIGHT  = Alignment(horizontal="right",  vertical="center", wrap_text=True)
 THIN        = Side(style="thin", color="000000")
 THIN_BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
-COLUMNS    = ["Name / Asset", "Date", "Work Type", "Task", "Description", "Hrs / Units", "Rate", "Total"]
+COLUMNS    = ["Name", "Date", "Work Type", "Task", "Description", "Hrs / Units", "Rate", "Total"]
 COL_WIDTHS = [22, 13, 14, 14, 32, 12, 12, 14]
 
 MONEY_COLS = {7, 8}   # 1-indexed: Rate, Total
