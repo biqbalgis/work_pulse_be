@@ -30,6 +30,7 @@ from workspaces.permissions import IsWorkspaceUser
 from .models import LEMReport
 from .envision_pdf_utils import generate_envision_lem_pdf
 from .envision_costing_pdf_utils import generate_envision_costing_pdf
+from .envision_costing_excel_utils import generate_envision_costing_xlsx
 
 
 def _address_to_lines(address: str) -> list:
@@ -669,9 +670,15 @@ def _fmt_money(v):
         return str(v or "0")
 
 
-class EnvisionCostingLEMView(APIView):
+class _EnvisionCostingLEMDataMixin:
     """
-    Generate and download an Envision GEO Costing LEM PDF.
+    Shared data-building logic for the Costing LEM PDF and Excel exports.
+
+    Both export formats accept the identical request parameters and must
+    reuse the identical CT- LEM number for the same project + task +
+    date_from — routing both formats through this one method guarantees
+    that (same query, same code path), rather than merely hoping two
+    independent implementations agree.
 
     Required body params:
         project_id  (uuid)  — project to report on
@@ -690,11 +697,13 @@ class EnvisionCostingLEMView(APIView):
     report content is always rebuilt from current data — never served from cache.
     """
 
-    permission_classes = [IsAuthenticated, IsWorkspaceUser]
-
     CT_PREFIX = "CT-"
 
-    def post(self, request):
+    def _build_costing_data(self, request):
+        """Returns (error_response, ctx). ctx is None if error_response is set.
+
+        ctx keys: data (the report data dict), lem_report, is_new, ct_display, from_str.
+        """
         data = request.data
 
         # ── Required params ───────────────────────────────────────────────────
@@ -707,22 +716,22 @@ class EnvisionCostingLEMView(APIView):
             return Response(
                 {"error": "project_id, date_from and date_to are required"},
                 status=400,
-            )
+            ), None
 
         try:
             date_from = datetime.strptime(from_str, "%Y-%m-%d").date()
             date_to   = datetime.strptime(to_str,   "%Y-%m-%d").date()
         except ValueError:
-            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400), None
 
         if date_to < date_from:
-            return Response({"error": "date_to must be on or after date_from"}, status=400)
+            return Response({"error": "date_to must be on or after date_from"}, status=400), None
 
         # ── Fetch project ─────────────────────────────────────────────────────
         try:
             project = Project.objects.select_related("client", "workspace").get(id=project_id)
         except Project.DoesNotExist:
-            return Response({"error": "Project not found"}, status=404)
+            return Response({"error": "Project not found"}, status=404), None
 
         workspace = project.workspace
 
@@ -732,7 +741,7 @@ class EnvisionCostingLEMView(APIView):
             try:
                 task = Task.objects.get(id=task_id, project=project)
             except Task.DoesNotExist:
-                return Response({"error": "Task not found for this project"}, status=404)
+                return Response({"error": "Task not found for this project"}, status=404), None
 
         # ── Build address / PM info ───────────────────────────────────────────
         pm_info       = project.pm_info or {}
@@ -764,7 +773,7 @@ class EnvisionCostingLEMView(APIView):
             return Response(
                 {"error": "No time entries found for the given project and date range."},
                 status=404,
-            )
+            ), None
 
         # ── Build labour groups (keyed by job_title/Work Type only — one total per Work Type, not per user) ──
         labour_map   = OrderedDict()
@@ -926,17 +935,64 @@ class EnvisionCostingLEMView(APIView):
         # match the same project/task/date range.
         lem_report.time_entries.set(entries_qs)
 
-        # ── Generate PDF ──────────────────────────────────────────────────────
+        return None, {
+            "data":       pdf_data,
+            "lem_report": lem_report,
+            "is_new":     is_new,
+            "ct_display": ct_display,
+            "from_str":   from_str,
+        }
+
+
+class EnvisionCostingLEMView(_EnvisionCostingLEMDataMixin, APIView):
+    """Generate and download an Envision GEO Costing LEM PDF. See
+    _EnvisionCostingLEMDataMixin for the shared request contract."""
+
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def post(self, request):
+        error, ctx = self._build_costing_data(request)
+        if error:
+            return error
+
         try:
-            pdf_buffer = generate_envision_costing_pdf(pdf_data)
+            pdf_buffer = generate_envision_costing_pdf(ctx["data"])
         except Exception as exc:
-            if is_new:
-                lem_report.delete()
+            if ctx["is_new"]:
+                ctx["lem_report"].delete()
             return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
 
         return FileResponse(
             pdf_buffer,
             as_attachment=True,
-            filename=f"Envision_Costing_LEM_{ct_display}_{from_str}.pdf",
+            filename=f"Envision_Costing_LEM_{ctx['ct_display']}_{ctx['from_str']}.pdf",
             content_type="application/pdf",
+        )
+
+
+class EnvisionCostingLEMExcelView(_EnvisionCostingLEMDataMixin, APIView):
+    """Generate and download an Envision GEO Costing LEM Excel workbook.
+    Accepts the identical request parameters as EnvisionCostingLEMView (PDF)
+    and reuses the identical CT- LEM number for the same project + task +
+    date_from — see _EnvisionCostingLEMDataMixin."""
+
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def post(self, request):
+        error, ctx = self._build_costing_data(request)
+        if error:
+            return error
+
+        try:
+            xlsx_buffer = generate_envision_costing_xlsx(ctx["data"])
+        except Exception as exc:
+            if ctx["is_new"]:
+                ctx["lem_report"].delete()
+            return Response({"error": f"Excel generation failed: {str(exc)}"}, status=500)
+
+        return FileResponse(
+            xlsx_buffer,
+            as_attachment=True,
+            filename=f"Envision_Costing_LEM_{ctx['ct_display']}_{ctx['from_str']}.xlsx",
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
