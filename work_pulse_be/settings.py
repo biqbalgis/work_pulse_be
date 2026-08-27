@@ -7,8 +7,8 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SECRET_KEY = config('SECRET_KEY')
 
-# DEBUG = config('DEBUG', default=False, cast=bool)
-DEBUG = True
+DEBUG = config('DEBUG', default=False, cast=bool)
+# DEBUG = True
 ALLOWED_HOSTS =  config("ALLOWED_HOSTS", default="*").split(",")
 
 INSTALLED_APPS = [
@@ -183,8 +183,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",  # Vite default port
     "http://127.0.0.1:5173",
-    "https://test.workpulse.ca",
-    "https://dev.workpulse.ca",
+    "https://envsys.workpulse.ca",
+    "https://envision.workpulse.ca",
 
 ]
 
@@ -193,7 +193,7 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 if domain:
     CSRF_TRUSTED_ORIGINS = [f'https://{domain}']
 else:
-    CSRF_TRUSTED_ORIGINS = ["https://test.workpulse.ca","https://dev.workpulse.ca","http://127.0.0.1:8000"]
+    CSRF_TRUSTED_ORIGINS = ["https://envision.workpulse.ca","https://envsys.workpulse.ca","http://127.0.0.1:8000"]
 
 CORS_ALLOW_CREDENTIALS = True
 
