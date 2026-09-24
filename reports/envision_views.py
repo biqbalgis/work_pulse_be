@@ -4,15 +4,17 @@ Envision GEO — LEM Report API Views
   POST /api/reports/envision/fieldTicket_Lem/payload/   — Field Ticket LEM PDF (payload entries only)
   POST /api/reports/envision/costing-lem/                — Costing LEM PDF
   GET  /api/reports/envision/lem/search/                 — Search Field Ticket LEM by number
+  GET  /api/reports/envision/lem/list/                   — List field tickets (paginated/searchable)
+  GET  /api/reports/envision/lem/download/               — Re-download a field ticket's original PDF
   POST /api/reports/envision/lem/void/                   — Void a LEM (soft-delete LEM + its time entries)
 """
 
 from collections import OrderedDict
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.http import FileResponse
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -486,6 +488,172 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
         )
 
 
+class EnvisionFieldTicketListView(APIView):
+    """
+    GET /api/reports/envision/lem/list/
+
+    Paginated, searchable list of field tickets (FT- whole-day and FTF-
+    per-submission series — the same two series EnvisionLEMSearchView and
+    EnvisionLEMVoidView already treat as "field tickets").
+
+    Visibility:
+      - Superuser: every field ticket, optionally narrowed to one workspace
+        via ?workspace=<id>.
+      - Member with an elevated role (admin/manager/field_manager) in a
+        workspace: every field ticket in that workspace, PLUS their own
+        (as requester) in any other workspace they belong to.
+      - Everyone else: only field tickets where they are the requester.
+
+    Query params (all optional):
+        search      (str)   — matches lem_number or project name, contains
+        date_from   (str)   — YYYY-MM-DD, filters on created_at date
+        date_to     (str)   — YYYY-MM-DD, filters on created_at date
+        ordering    (str)   — "created_at" | "-created_at" | "lem_number" | "-lem_number"
+        page        (int)   — default 1
+        page_size   (int)   — default 20, max 100
+        workspace   (uuid)  — superuser only, narrows to one workspace
+
+    Each row's total_hours/asset_info are read from the ticket's stored
+    report_data snapshot (frozen at generation time), not recomputed live —
+    matching what EnvisionFieldTicketDownloadView will actually produce.
+    """
+
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+    ELEVATED_ROLES = {"admin", "manager", "field_manager"}
+    FIELD_TICKET_PREFIX = "FT"  # matches both FT- and FTF-
+    DEFAULT_PAGE_SIZE = 20
+    MAX_PAGE_SIZE = 100
+    ALLOWED_ORDERING = {"created_at", "-created_at", "lem_number", "-lem_number"}
+
+    def get(self, request):
+        user = request.user
+        qs = (
+            LEMReport.objects
+            .filter(lem_number__startswith=self.FIELD_TICKET_PREFIX, project__isnull=False)
+            .select_related("project", "project__workspace", "requester")
+        )
+
+        if user.is_superuser:
+            workspace_id = request.GET.get("workspace")
+            if workspace_id:
+                qs = qs.filter(project__workspace_id=workspace_id)
+        else:
+            elevated_workspace_ids = list(
+                WorkspaceMember.objects.filter(
+                    user=user, role__in=self.ELEVATED_ROLES,
+                ).values_list("workspace_id", flat=True)
+            )
+            if elevated_workspace_ids:
+                qs = qs.filter(Q(project__workspace_id__in=elevated_workspace_ids) | Q(requester=user))
+            else:
+                qs = qs.filter(requester=user)
+
+        search = request.GET.get("search", "").strip()
+        if search:
+            qs = qs.filter(Q(lem_number__icontains=search) | Q(project__name__icontains=search))
+
+        date_from = request.GET.get("date_from")
+        date_to = request.GET.get("date_to")
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+
+        ordering = request.GET.get("ordering", "-created_at")
+        if ordering not in self.ALLOWED_ORDERING:
+            ordering = "-created_at"
+        qs = qs.order_by(ordering, "-id")
+
+        try:
+            page = max(int(request.GET.get("page", 1)), 1)
+            page_size = min(max(int(request.GET.get("page_size", self.DEFAULT_PAGE_SIZE)), 1), self.MAX_PAGE_SIZE)
+        except ValueError:
+            return Response({"error": "page and page_size must be integers"}, status=400)
+
+        count = qs.count()
+        start = (page - 1) * page_size
+        page_qs = qs[start:start + page_size]
+
+        return Response({"results": [self._serialize(lem) for lem in page_qs], "count": count})
+
+    def _serialize(self, lem):
+        data = lem.report_data or {}
+
+        total_hours = Decimal("0")
+        for row in data.get("labour_rows", []):
+            try:
+                total_hours += Decimal(str(row.get("hours") or 0))
+            except (InvalidOperation, TypeError):
+                pass
+
+        asset_info = [
+            {
+                "name": row.get("item", ""),
+                "hours": row.get("hours") or "",
+                "units": row.get("units") or "",
+                "cost": row.get("cost", ""),
+            }
+            for row in data.get("equipment_rows", [])
+        ]
+
+        return {
+            "id": lem.id,
+            "lem_number": lem.lem_number,
+            "project_name": lem.project.name if lem.project else "-",
+            "total_hours": _fmt_money(total_hours),
+            "asset_info": asset_info,
+            "created_at": lem.created_at,
+            "created_by": lem.requester.get_full_name() if lem.requester else "-",
+        }
+
+
+class EnvisionFieldTicketDownloadView(APIView):
+    """
+    GET /api/reports/envision/lem/download/?lem_number=FT-000012
+
+    Re-renders the PDF for an existing field ticket (FT- or FTF-) from its
+    stored report_data snapshot — the exact content as originally issued,
+    never recomputed from current live time entries/assets. Same visibility
+    rule as EnvisionFieldTicketListView.
+    """
+
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+    ELEVATED_ROLES = {"admin", "manager", "field_manager"}
+
+    def get(self, request):
+        raw = request.GET.get("lem_number", "").strip()
+        if not raw:
+            return Response({"error": "lem_number query parameter is required"}, status=400)
+
+        try:
+            lem_report = LEMReport.objects.select_related("project__workspace", "requester").get(lem_number=raw)
+        except LEMReport.DoesNotExist:
+            return Response({"error": f"No field ticket found for number '{raw}'"}, status=404)
+
+        user = request.user
+        if not user.is_superuser and lem_report.requester_id != user.id:
+            workspace = lem_report.project.workspace if lem_report.project else None
+            is_elevated = workspace and WorkspaceMember.objects.filter(
+                user=user, workspace=workspace, role__in=self.ELEVATED_ROLES,
+            ).exists()
+            if not is_elevated:
+                return Response({"error": "You do not have permission to download this field ticket."}, status=403)
+
+        try:
+            pdf_buffer = generate_envision_lem_pdf(lem_report.report_data)
+        except Exception as exc:
+            return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
+
+        digits = lem_report.lem_number.split("-", 1)[-1]
+        date_part = str(lem_report.lem_date) if lem_report.lem_date else ""
+        return FileResponse(
+            pdf_buffer,
+            as_attachment=True,
+            filename=f"Field_Ticket_LEM_{digits}_{date_part}.pdf",
+            content_type="application/pdf",
+        )
+
+
 class EnvisionLEMSearchView(APIView):
     """
     Look up a saved Envision Field Ticket LEM by number.
@@ -543,17 +711,21 @@ class EnvisionLEMVoidView(APIView):
     no items after that. None of these show up in reports once their
     TimeEntry is gone. This makes the LEM number stop showing up in
     EnvisionLEMSearchView and frees its entries to be re-entered under a
-    new LEM.
+    new LEM. Records who voided it and when (deleted_by / deleted_at).
 
-    ONLY works on FTF- (Field Ticket Field, from
-    EnvisionFieldTicketLEMFromPayloadView) numbers — FT- (whole-day) and
-    CT- (Costing) LEMs cannot be voided through this endpoint.
+    Works on both the FT- (whole-day, from EnvisionLEMReportView) and FTF-
+    (per-submission, from EnvisionFieldTicketLEMFromPayloadView) field
+    ticket series. CT- (Costing) and generic LEM- numbers cannot be voided
+    through this endpoint.
 
     Required body params:
-        lem_number  (str)  — with or without the FTF- prefix
+        lem_number  (str)  — fully prefixed (e.g. "FT-000012"), or bare
+                             digits, which default to the FTF- series for
+                             backwards compatibility with the existing
+                             manual "void by number" search.
 
-    Restricted to admins/managers/field_managers (or superusers) within the
-    workspace that owns the LEM's project.
+    Allowed for: the LEM's own requester, or an admin/manager/field_manager
+    (or superuser) within the workspace that owns the LEM's project.
 
     Note: LEMs generated before the `time_entries` relation existed have
     nothing recorded on it, so voiding one soft-deletes the LEMReport but
@@ -581,7 +753,8 @@ class EnvisionLEMVoidView(APIView):
 
         workspace = lem_report.project.workspace
         user = request.user
-        if not user.is_superuser:
+        is_owner = lem_report.requester_id == user.id
+        if not user.is_superuser and not is_owner:
             is_elevated = WorkspaceMember.objects.filter(
                 user=user, workspace=workspace, role__in=self.ELEVATED_ROLES
             ).exists()
@@ -614,6 +787,7 @@ class EnvisionLEMVoidView(APIView):
             for approval in approvals:
                 self._sync_approval_after_delete(approval)
 
+            lem_report.deleted_by = user
             lem_report.delete()
 
         return Response({
@@ -642,18 +816,25 @@ class EnvisionLEMVoidView(APIView):
         approval.save(update_fields=["total_hours"])
 
     FTF_PREFIX = "FTF-"
+    FT_PREFIX = "FT-"
 
     def _find_lem(self, raw):
-        """Only matches FTF- (Field Ticket Field / payload) LEMs — strips
-        whichever known prefix (if any) was passed in, then looks up FTF-
-        only. FT-/CT-/LEM- numbers are out of scope for this endpoint, even
-        if that prefix is what was actually passed."""
+        """Matches both field ticket series (FT- whole-day, FTF- per-
+        submission). A fully-prefixed number is looked up exactly as given.
+        Bare digits (no prefix) default to the FTF- series, for backwards
+        compatibility with the existing manual "void by number" search box.
+        CT-/LEM- numbers are out of scope for this endpoint even if that
+        prefix is what was actually passed."""
+        raw = raw.strip()
+        if raw.startswith(self.FTF_PREFIX) or raw.startswith(self.FT_PREFIX):
+            return LEMReport.objects.filter(lem_number=raw).first()
+
         digits = raw
-        for prefix in (self.FTF_PREFIX, "FT-", "CT-", "LEM-"):
+        for prefix in ("CT-", "LEM-"):
             if digits.startswith(prefix):
                 digits = digits[len(prefix):]
                 break
-        db_key = f"{self.FTF_PREFIX}{digits.strip()}"
+        db_key = f"{self.FTF_PREFIX}{digits}"
         return LEMReport.objects.filter(lem_number=db_key).first()
 
 

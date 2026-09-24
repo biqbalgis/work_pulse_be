@@ -15,6 +15,12 @@ class LEMReport(SoftDeleteModel):
     report_data = models.JSONField(default=dict)
     created_at  = models.DateTimeField(auto_now_add=True)
 
+    # Who deleted/voided this LEM and when — deleted_at (SoftDeleteModel)
+    # already records "when"; deleted_by fills in "who" for the same event.
+    deleted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+
     # Exactly which TimeEntry rows this LEM's report_data was built from —
     # set (not just added to) every time the LEM is (re)generated, so voiding
     # only touches entries actually captured in the latest snapshot, not
