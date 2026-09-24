@@ -492,19 +492,24 @@ class EnvisionFieldTicketListView(APIView):
     """
     GET /api/reports/envision/lem/list/
 
-    Paginated, searchable list of field tickets (FT- whole-day and FTF-
-    per-submission series — the same two series EnvisionLEMSearchView and
-    EnvisionLEMVoidView already treat as "field tickets").
+    Paginated, searchable list of tickets, one series at a time — the
+    frontend's three tabs ("Field Ticket - Complete Day", "Field Ticket -
+    Field", "Costing Ticket") each pass a different `type`:
+      - type=FT   -> FT-  (whole-day field ticket)
+      - type=FTF  -> FTF- (per-submission field ticket)
+      - type=CT   -> CT-  (costing ticket)
+    Defaults to FT- if `type` is missing/unrecognised.
 
     Visibility:
-      - Superuser: every field ticket, optionally narrowed to one workspace
-        via ?workspace=<id>.
+      - Superuser: every ticket of that type, optionally narrowed to one
+        workspace via ?workspace=<id>.
       - Member with an elevated role (admin/manager/field_manager) in a
-        workspace: every field ticket in that workspace, PLUS their own
-        (as requester) in any other workspace they belong to.
-      - Everyone else: only field tickets where they are the requester.
+        workspace: every ticket of that type in that workspace, PLUS their
+        own (as requester) in any other workspace they belong to.
+      - Everyone else: only tickets of that type where they are the requester.
 
-    Query params (all optional):
+    Query params (all optional except `type`):
+        type        (str)   — "FT" | "FTF" | "CT", default "FT"
         search      (str)   — matches lem_number or project name, contains
         date_from   (str)   — YYYY-MM-DD, filters on created_at date
         date_to     (str)   — YYYY-MM-DD, filters on created_at date
@@ -516,20 +521,27 @@ class EnvisionFieldTicketListView(APIView):
     Each row's total_hours/asset_info are read from the ticket's stored
     report_data snapshot (frozen at generation time), not recomputed live —
     matching what EnvisionFieldTicketDownloadView will actually produce.
+    FT-/FTF- tickets store report_data as labour_rows/equipment_rows; CT-
+    tickets store it as labour_groups grouped by asset (job titles play no
+    part in Costing Tickets — see EnvisionCostingLEMView) with no separate
+    asset section, so total_hours/asset_info are derived differently for CT.
     """
 
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
     ELEVATED_ROLES = {"admin", "manager", "field_manager"}
-    FIELD_TICKET_PREFIX = "FT"  # matches both FT- and FTF-
+    TYPE_PREFIXES = {"FT": "FT-", "FTF": "FTF-", "CT": "CT-"}
     DEFAULT_PAGE_SIZE = 20
     MAX_PAGE_SIZE = 100
     ALLOWED_ORDERING = {"created_at", "-created_at", "lem_number", "-lem_number"}
 
     def get(self, request):
         user = request.user
+        ticket_type = request.GET.get("type", "FT").upper()
+        prefix = self.TYPE_PREFIXES.get(ticket_type, self.TYPE_PREFIXES["FT"])
+
         qs = (
             LEMReport.objects
-            .filter(lem_number__startswith=self.FIELD_TICKET_PREFIX, project__isnull=False)
+            .filter(lem_number__startswith=prefix, project__isnull=False)
             .select_related("project", "project__workspace", "requester")
         )
 
@@ -574,9 +586,21 @@ class EnvisionFieldTicketListView(APIView):
         start = (page - 1) * page_size
         page_qs = qs[start:start + page_size]
 
-        return Response({"results": [self._serialize(lem) for lem in page_qs], "count": count})
+        serialize = self._serialize_costing if prefix == "CT-" else self._serialize_field_ticket
+        return Response({"results": [serialize(lem) for lem in page_qs], "count": count})
 
-    def _serialize(self, lem):
+    def _base_fields(self, lem):
+        return {
+            "id": lem.id,
+            "lem_number": lem.lem_number,
+            "project_name": lem.project.name if lem.project else "-",
+            "created_at": lem.created_at,
+            "created_by": lem.requester.get_full_name() if lem.requester else "-",
+        }
+
+    def _serialize_field_ticket(self, lem):
+        """FT-/FTF- shape: report_data.labour_rows / .equipment_rows (see
+        envision_pdf_utils.py's docstring)."""
         data = lem.report_data or {}
 
         total_hours = Decimal("0")
@@ -597,13 +621,39 @@ class EnvisionFieldTicketListView(APIView):
         ]
 
         return {
-            "id": lem.id,
-            "lem_number": lem.lem_number,
-            "project_name": lem.project.name if lem.project else "-",
+            **self._base_fields(lem),
             "total_hours": _fmt_money(total_hours),
             "asset_info": asset_info,
-            "created_at": lem.created_at,
-            "created_by": lem.requester.get_full_name() if lem.requester else "-",
+        }
+
+    def _serialize_costing(self, lem):
+        """CT- shape: report_data.labour_groups, each group keyed by the
+        linked asset's name (job titles play no part — see
+        _EnvisionCostingLEMDataMixin), with no separate asset section."""
+        data = lem.report_data or {}
+        groups = data.get("labour_groups", [])
+
+        total_hours = Decimal("0")
+        for group in groups:
+            try:
+                total_hours += Decimal(str(group.get("hours_total") or 0))
+            except (InvalidOperation, TypeError):
+                pass
+
+        asset_info = [
+            {
+                "name": group.get("job_title", ""),
+                "hours": group.get("hours_total") or "",
+                "units": "",
+                "cost": "${}".format(_fmt_money(group.get("subtotal") or 0)),
+            }
+            for group in groups
+        ]
+
+        return {
+            **self._base_fields(lem),
+            "total_hours": _fmt_money(total_hours),
+            "asset_info": asset_info,
         }
 
 
@@ -611,10 +661,12 @@ class EnvisionFieldTicketDownloadView(APIView):
     """
     GET /api/reports/envision/lem/download/?lem_number=FT-000012
 
-    Re-renders the PDF for an existing field ticket (FT- or FTF-) from its
+    Re-renders the PDF for an existing ticket (FT-, FTF-, or CT-) from its
     stored report_data snapshot — the exact content as originally issued,
-    never recomputed from current live time entries/assets. Same visibility
-    rule as EnvisionFieldTicketListView.
+    never recomputed from current live time entries/assets. CT- (Costing)
+    tickets use the Costing PDF generator (different report_data shape —
+    see EnvisionFieldTicketListView); FT-/FTF- use the field ticket one.
+    Same visibility rule as EnvisionFieldTicketListView.
     """
 
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
@@ -639,17 +691,22 @@ class EnvisionFieldTicketDownloadView(APIView):
             if not is_elevated:
                 return Response({"error": "You do not have permission to download this field ticket."}, status=403)
 
+        is_costing = lem_report.lem_number.startswith("CT-")
         try:
-            pdf_buffer = generate_envision_lem_pdf(lem_report.report_data)
+            if is_costing:
+                pdf_buffer = generate_envision_costing_pdf(lem_report.report_data)
+            else:
+                pdf_buffer = generate_envision_lem_pdf(lem_report.report_data)
         except Exception as exc:
             return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
 
         digits = lem_report.lem_number.split("-", 1)[-1]
         date_part = str(lem_report.lem_date) if lem_report.lem_date else ""
+        prefix_label = "Costing_LEM" if is_costing else "Field_Ticket_LEM"
         return FileResponse(
             pdf_buffer,
             as_attachment=True,
-            filename=f"Field_Ticket_LEM_{digits}_{date_part}.pdf",
+            filename=f"{prefix_label}_{digits}_{date_part}.pdf",
             content_type="application/pdf",
         )
 
@@ -821,20 +878,19 @@ class EnvisionLEMVoidView(APIView):
     def _find_lem(self, raw):
         """Matches both field ticket series (FT- whole-day, FTF- per-
         submission). A fully-prefixed number is looked up exactly as given.
-        Bare digits (no prefix) default to the FTF- series, for backwards
-        compatibility with the existing manual "void by number" search box.
-        CT-/LEM- numbers are out of scope for this endpoint even if that
-        prefix is what was actually passed."""
+        Bare digits (no recognizable prefix at all) default to the FTF-
+        series, for backwards compatibility with the existing manual "void
+        by number" search box. A fully-prefixed CT-/LEM- number is REJECTED
+        outright (returns None -> 404) — it must never be silently stripped
+        and re-looked-up as FTF-, which would void a same-numbered but
+        completely unrelated ticket."""
         raw = raw.strip()
         if raw.startswith(self.FTF_PREFIX) or raw.startswith(self.FT_PREFIX):
             return LEMReport.objects.filter(lem_number=raw).first()
+        if raw.startswith("CT-") or raw.startswith("LEM-"):
+            return None
 
-        digits = raw
-        for prefix in ("CT-", "LEM-"):
-            if digits.startswith(prefix):
-                digits = digits[len(prefix):]
-                break
-        db_key = f"{self.FTF_PREFIX}{digits}"
+        db_key = f"{self.FTF_PREFIX}{raw}"
         return LEMReport.objects.filter(lem_number=db_key).first()
 
 
