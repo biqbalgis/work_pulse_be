@@ -9,9 +9,12 @@ Body:
     date_to       (str, required)   YYYY-MM-DD
     interval      (str, required)   "daily" | "weekly" | "biweekly"
     metrics       (list, required)  any of "total" | "regular" | "overtime"
-    group_by      (list, required)  1-2 of "project" | "user" | "task"
+    group_by      (list, required)  1-2 of "project" | "user" | "task" | "group"
     project_ids   (list, optional)  empty/omitted = all projects (incl. none)
     user_ids      (list, optional)  empty/omitted = all employees
+    groups        (list, optional)  user groups (subcontractors | external_envision |
+                                    internal_envision); empty/omitted = everyone.
+                                    Combined with user_ids as an intersection.
     include_chart (bool, optional)  default false
     chart_type    (str, optional)   "bar" | "line" | "pie" (default "bar")
     workspace     (uuid, optional)  superusers: narrow to one workspace;
@@ -180,6 +183,10 @@ class CustomReportView(APIView):
 
         project_ids = _as_list(data.get("project_ids"), "project_ids")
         user_ids = _as_list(data.get("user_ids"), "user_ids")
+        groups = _as_list(data.get("groups"), "groups")
+        valid_groups = {value for value, _label in WorkspaceMember.GROUP_CHOICES}
+        if not set(groups) <= valid_groups:
+            raise _BadRequest("groups must be a list of: " + ", ".join(sorted(valid_groups)))
 
         # ── Resolve projects / employees the caller may actually see ─────────
         projects = []
@@ -212,6 +219,11 @@ class CustomReportView(APIView):
             matching = matching.filter(project_id__in=project_set)
         if user_ids:
             matching = matching.filter(user_id__in=user_ids)
+        if groups:
+            group_members = WorkspaceMember.objects.filter(group__in=groups)
+            if workspace_ids is not None:
+                group_members = group_members.filter(workspace_id__in=workspace_ids)
+            matching = matching.filter(user_id__in=group_members.values("user_id"))
         try:
             target_user_ids = list(matching.values_list("user_id", flat=True).distinct())
         except DjangoValidationError:
@@ -223,10 +235,18 @@ class CustomReportView(APIView):
             base.filter(user_id__in=target_user_ids).select_related("user", "project", "task")
         )
 
+        group_lookup = None
+        if "group" in group_by:
+            members = WorkspaceMember.objects.filter(user_id__in=target_user_ids)
+            if workspace_ids is not None:
+                members = members.filter(workspace_id__in=workspace_ids)
+            group_lookup = {(uid, wid): grp for uid, wid, grp in members.values_list("user_id", "workspace_id", "group")}
+
         buckets, date_to_bucket = build_buckets(date_from, date_to, interval)
         cells = aggregate_hours(
             entries, date_from, date_to, date_to_bucket, group_by,
             include_entry=(lambda e: e.project_id in project_set) if project_set else (lambda e: True),
+            group_lookup=group_lookup,
         )
         if not cells:
             return Response({"error": "No time entries found for the selected filters."}, status=404)
@@ -242,6 +262,8 @@ class CustomReportView(APIView):
             ("Group by", " > ".join(GROUP_LABELS[g] for g in group_by)),
             ("Projects", _names_summary([p.name for p in projects], "All projects")),
             ("Employees", _names_summary(employee_names, "All employees")),
+            ("User groups", _names_summary(
+                [dict(WorkspaceMember.GROUP_CHOICES)[g] for g in groups], "All groups")),
             ("Metrics", ", ".join(METRIC_LABELS[m] for m in metrics)),
             ("Generated", "{} by {}".format(today.strftime("%b %d, %Y"),
                                             request.user.get_full_name() or request.user.email)),
@@ -276,13 +298,23 @@ class CustomReportOptionsView(APIView):
             members = members.filter(workspace_id__in=scope)
 
         users = User.objects.filter(id__in=members.values("user_id")).order_by("first_name", "last_name", "email")
+        group_of = {}
+        for uid, grp in members.exclude(group__isnull=True).values_list("user_id", "group"):
+            group_of[uid] = grp
+        group_counts = {}
+        for grp in group_of.values():
+            group_counts[grp] = group_counts.get(grp, 0) + 1
         return Response({
+            "groups": [
+                {"value": value, "label": label, "count": group_counts.get(value, 0)}
+                for value, label in WorkspaceMember.GROUP_CHOICES
+            ],
             "projects": [
                 {"id": str(p.id), "name": p.name, "job_code": p.job_code or ""}
                 for p in projects.order_by("name")
             ],
             "employees": [
-                {"id": str(u.id), "label": u.get_full_name() or u.email}
+                {"id": str(u.id), "label": u.get_full_name() or u.email, "group": group_of.get(u.id)}
                 for u in users
             ],
         })

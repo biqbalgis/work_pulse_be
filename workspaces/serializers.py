@@ -39,6 +39,11 @@ class WorkspaceMemberSerializer(serializers.ModelSerializer):
         allow_null=True
     )
 
+    group = serializers.ChoiceField(
+        choices=WorkspaceMember.GROUP_CHOICES, required=False, allow_null=True, allow_blank=True,
+    )
+    group_label = serializers.SerializerMethodField()
+
     class Meta:
         model = WorkspaceMember
         fields = [
@@ -46,14 +51,38 @@ class WorkspaceMemberSerializer(serializers.ModelSerializer):
             'workspace',
             'user',
             'role',
+            'group',
+            'group_label',
             'manager',
             'user_email',
             'user_name',
         ]
 
+    def get_group_label(self, obj):
+        return obj.get_group_display() if obj.group else None
+
+    def validate_group(self, value):
+        # An empty value clears the group ("remove from group").
+        return value or None
+
     def validate(self, attrs):
         workspace = attrs.get("workspace")
         manager = attrs.get("manager")
+
+        # Only superusers and admins of the workspace may add/change/remove a user's group.
+        if "group" in attrs:
+            request = self.context.get("request")
+            target_ws = workspace or (self.instance.workspace if self.instance else None)
+            actor = request.user if request else None
+            is_admin = bool(
+                actor and target_ws and (
+                    actor.is_superuser
+                    or WorkspaceMember.objects.filter(user=actor, workspace=target_ws, role="admin").exists()
+                )
+            )
+            unchanged = bool(self.instance) and attrs["group"] == self.instance.group
+            if not is_admin and not unchanged:
+                raise serializers.ValidationError({"group": "Only workspace admins can change a user's group."})
 
         # If a manager is selected
         if manager:

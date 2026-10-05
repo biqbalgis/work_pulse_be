@@ -69,7 +69,7 @@ class WorkspaceMemberViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['user__first_name', 'user__last_name', 'user__email', 'role', 'workspace__name']
-    ordering_fields = ['user__first_name', 'user__email', 'role', 'workspace__name', 'joined_at']
+    ordering_fields = ['user__first_name', 'user__email', 'role', 'group', 'workspace__name', 'joined_at']
 
     def paginate_queryset(self, queryset):
         if self.request.query_params.get('pagination') == 'false':
@@ -93,5 +93,11 @@ class WorkspaceMemberViewSet(viewsets.ModelViewSet):
         # Filter for specific workspace if provided
         if workspace_id:
             qs = qs.filter(workspace_id=workspace_id)
+
+        group = self.request.query_params.get("group")
+        if group == "none":
+            qs = qs.filter(group__isnull=True)
+        elif group:
+            qs = qs.filter(group=group)
 
         return qs.select_related("user", "workspace")

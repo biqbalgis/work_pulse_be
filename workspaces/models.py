@@ -37,7 +37,20 @@ class Workspace(SoftDeleteModel):
     def __str__(self):
         return self.name
 
+    @property
+    def is_envision(self):
+        """Envision workspaces ("Envision", "Envision Geo", ...) use the predefined user groups."""
+        return (self.name or "").strip().lower().startswith("envision")
+
+
 class WorkspaceMember(SoftDeleteModel):
+    # Predefined user groups; a member belongs to at most one. Used to filter / split Custom Reports.
+    GROUP_CHOICES = (
+        ('subcontractors', 'Subcontractors'),
+        ('external_envision', 'External Envision'),
+        ('internal_envision', 'Internal Envision'),
+    )
+
     ROLE_CHOICES = (
         ('admin', 'Admin'),
         ('manager', 'Manager'),
@@ -48,6 +61,7 @@ class WorkspaceMember(SoftDeleteModel):
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='members')
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='memberships')
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='user')
+    group = models.CharField(max_length=30, choices=GROUP_CHOICES, null=True, blank=True, db_index=True)
     joined_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
     manager = models.ForeignKey(User,on_delete=models.SET_NULL,null=True,blank=True,related_name="team_members")

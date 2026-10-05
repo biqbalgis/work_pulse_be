@@ -95,18 +95,22 @@ class RegisterSerializer(serializers.ModelSerializer):
         choices=[('admin', 'Admin'), ('manager', 'Manager'), ('user', 'User'),('field_manager','Field Manager')],
         default='user'
     )
+    group = serializers.ChoiceField(
+        choices=WorkspaceMember.GROUP_CHOICES, required=False, allow_null=True, allow_blank=True,
+    )
 
     class Meta:
         model = User
         fields = [
             'id', 'email', 'first_name', 'last_name', 'password',
-            'workspace_id', 'role'
+            'workspace_id', 'role', 'group'
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
     def create(self, validated_data):
         workspace_id = validated_data.pop('workspace_id', None)
         role = validated_data.pop('role', 'user')
+        group = validated_data.pop('group', None) or None
 
         email = validated_data.get('email').strip().lower()
         validated_data['username'] = email
@@ -123,8 +127,12 @@ class RegisterSerializer(serializers.ModelSerializer):
             else:
                 raise serializers.ValidationError("Workspace ID or name is required for non-superuser registration.")
 
+        # Envision workspaces sort every user into one of the predefined groups.
+        if workspace.is_envision and not group:
+            raise serializers.ValidationError({"group": "Select a group for this user."})
+
         user = User.objects.create_user(**validated_data)
-        WorkspaceMember.objects.create(workspace=workspace, user=user, role=role)
+        WorkspaceMember.objects.create(workspace=workspace, user=user, role=role, group=group)
         return user
 
 

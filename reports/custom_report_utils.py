@@ -26,13 +26,14 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from core.utils.envision_time import alberta_stat_holidays, utc_to_envision_local
+from workspaces.models import WorkspaceMember
 from .envision_timesheet_utils import _split_day_hours, _week_sunday
 
 METRICS_ORDER = ("total", "regular", "overtime")
 METRIC_LABELS = {"total": "Total", "regular": "Regular", "overtime": "Overtime"}
 METRIC_INDEX = {"total": 0, "regular": 1, "overtime": 2}
-GROUP_DIMS = ("project", "user", "task")
-GROUP_LABELS = {"project": "Project", "user": "Employee", "task": "Task"}
+GROUP_DIMS = ("project", "user", "task", "group")
+GROUP_LABELS = {"project": "Project", "user": "Employee", "task": "Task", "group": "User Group"}
 INTERVALS = ("daily", "weekly", "biweekly")
 CHART_TYPES = ("bar", "line", "pie")
 
@@ -88,8 +89,14 @@ def build_buckets(date_from, date_to, interval):
 
 # ── Aggregation ───────────────────────────────────────────────────────────────
 
-def _dim_key(entry, dim):
-    """(display label, stable id) for one grouping dimension of an entry."""
+def _dim_key(entry, dim, group_lookup=None):
+    """(display label, stable id) for one grouping dimension of an entry.
+    group_lookup: {(user_id, workspace_id): group value} for the "group" dimension."""
+    if dim == "group":
+        value = (group_lookup or {}).get((entry.user_id, entry.workspace_id))
+        if value:
+            return (dict(WorkspaceMember.GROUP_CHOICES).get(value, value), value)
+        return ("(No Group)", "")
     if dim == "project":
         if entry.project_id:
             return (entry.project.name, str(entry.project_id))
@@ -101,12 +108,13 @@ def _dim_key(entry, dim):
     return ("(No Task)", "")
 
 
-def aggregate_hours(entries, date_from, date_to, date_to_bucket, group_by, include_entry):
+def aggregate_hours(entries, date_from, date_to, date_to_bucket, group_by, include_entry, group_lookup=None):
     """
     entries       — every TimeEntry (all projects) for the relevant employees
                     across the full Sun-Sat weeks covering the range
     include_entry — predicate: does this entry appear in the report (project
                     filter)? RT/OT is still computed from ALL entries.
+    group_lookup  — {(user_id, workspace_id): group value}, only needed when grouping by "group".
     Returns {group_key_tuple: {bucket_idx: [total, regular, overtime]}}.
     """
     week_start, week_end = week_range_for(date_from, date_to)
@@ -143,7 +151,7 @@ def aggregate_hours(entries, date_from, date_to, date_to_bucket, group_by, inclu
                     if not include_entry(entry):
                         continue
                     share = entry.duration / day_minutes
-                    key = tuple(_dim_key(entry, dim) for dim in group_by)
+                    key = tuple(_dim_key(entry, dim, group_lookup) for dim in group_by)
                     cell = cells[key][bucket_idx]
                     cell[0] += entry.duration / 60.0
                     cell[1] += day_reg * share
