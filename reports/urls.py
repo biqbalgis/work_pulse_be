@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import WeeklyPayrollReport, DailyRTOTReport, DailyDetailView, EmployeePayrollDashboard, DailyWorkReportView, \
     LEMReportGenerationView, LEMDailyReportView, LEMCostingReportView, TimeEntryExcelReportView
+from .custom_report_views import CustomReportOptionsView, CustomReportView
 from .dashboard_views import (
     DashboardSummaryView,
     DashboardHoursByProjectView,
@@ -20,6 +21,8 @@ urlpatterns = [
     path("lem-report/costing/", LEMCostingReportView.as_view(), name="lem-report-costing"),
     path("payroll/employees/", EmployeePayrollDashboard.as_view()),
     path("time-entry-excel/", TimeEntryExcelReportView.as_view(), name="time-entry-excel-report"),
+    path("custom/", CustomReportView.as_view(), name="custom-report"),
+    path("custom/options/", CustomReportOptionsView.as_view(), name="custom-report-options"),
     path("dashboard/summary/", DashboardSummaryView.as_view(), name="dashboard-summary"),
     path("dashboard/hours-by-project/", DashboardHoursByProjectView.as_view(), name="dashboard-hours-by-project"),
     path("dashboard/field-tickets/", DashboardFieldTicketsView.as_view(), name="dashboard-field-tickets"),

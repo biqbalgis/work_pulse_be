@@ -5,6 +5,7 @@ from .models import UserPermission
 PERMISSION_FIELDS = [
     "dashboard",
     "reports",
+    "custom_report",
     "timesheet",
     "admin_timesheet",
     "field_ticket",

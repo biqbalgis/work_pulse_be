@@ -21,7 +21,8 @@ class UserPermission(models.Model):
     # ── Section visibility flags ───────────────────────────────────────────
     dashboard         = models.BooleanField(default=False)
     reports           = models.BooleanField(default=False)
-    timesheet         = models.BooleanField(default=False)
+    custom_report     = models.BooleanField(default=False)
+    timesheet        = models.BooleanField(default=False)
     admin_timesheet   = models.BooleanField(default=False)
     field_ticket      = models.BooleanField(default=False)
     time_off          = models.BooleanField(default=False)
