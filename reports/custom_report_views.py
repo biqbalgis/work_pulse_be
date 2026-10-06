@@ -7,7 +7,7 @@ creates a LEMReport row, it just streams back a freshly built .xlsx.
 Body:
     date_from     (str, required)   YYYY-MM-DD
     date_to       (str, required)   YYYY-MM-DD
-    interval      (str, required)   "daily" | "weekly" | "biweekly"
+    interval      (str, required)   "daily" | "weekly" | "biweekly" | "monthly"
     metrics       (list, required)  any of "total" | "regular" | "overtime"
     group_by      (list, required)  1-2 of "project" | "user" | "task" | "group"
     project_ids   (list, optional)  empty/omitted = all projects (incl. none)
@@ -38,11 +38,13 @@ from rest_framework.views import APIView
 
 from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
 from django.utils import timezone
+from clients.models import Client
 from projects.models import Project
+from tasks.models import Task
 from time_entries.models import TimeEntry
 from user_permissions.models import UserPermission
 from users.models import User
-from workspaces.models import WorkspaceMember
+from workspaces.models import Workspace, WorkspaceMember
 
 from .custom_report_utils import (
     CHART_TYPES,
@@ -163,7 +165,7 @@ class CustomReportView(APIView):
             raise _BadRequest("interval must be one of: " + ", ".join(INTERVALS))
         if interval == "daily" and range_days > MAX_DAILY_RANGE_DAYS:
             raise _BadRequest(
-                f"A daily report can cover at most {MAX_DAILY_RANGE_DAYS} days — choose weekly or biweekly "
+                f"A daily report can cover at most {MAX_DAILY_RANGE_DAYS} days — choose weekly, biweekly or monthly "
                 "for a longer range."
             )
 
@@ -242,11 +244,16 @@ class CustomReportView(APIView):
                 members = members.filter(workspace_id__in=workspace_ids)
             group_lookup = {(uid, wid): grp for uid, wid, grp in members.values_list("user_id", "workspace_id", "group")}
 
+        policy_by_workspace = dict(
+            Workspace.objects.filter(id__in={e.workspace_id for e in entries}).values_list("id", "overtime_policy")
+        )
+
         buckets, date_to_bucket = build_buckets(date_from, date_to, interval)
         cells = aggregate_hours(
             entries, date_from, date_to, date_to_bucket, group_by,
             include_entry=(lambda e: e.project_id in project_set) if project_set else (lambda e: True),
             group_lookup=group_lookup,
+            policy_by_workspace=policy_by_workspace,
         )
         if not cells:
             return Response({"error": "No time entries found for the selected filters."}, status=404)
@@ -282,7 +289,15 @@ class CustomReportView(APIView):
 
 
 class CustomReportOptionsView(APIView):
-    """GET /api/reports/custom/options/ — projects and employees for the pickers."""
+    """
+    GET /api/reports/custom/options/ — projects, employees, clients, tasks and groups for the pickers.
+
+    ?workspace=<id>   superusers: narrow to one workspace
+    ?active_only=1    only active projects and employees (the Report Dashboard's filter dropdowns).
+                      Without it every project/employee is listed, because the Custom Report must still
+                      be able to report on people and projects that are no longer active.
+    Tasks are always every task of every project in scope, each with its project's job number and client.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -290,20 +305,38 @@ class CustomReportOptionsView(APIView):
         scope = _resolve_workspace_scope(request, request.query_params.get("workspace"))
         if isinstance(scope, Response):
             return scope
+        active_only = request.query_params.get("active_only") in ("1", "true", "True")
 
-        projects = Project.objects.all()
+        all_projects = Project.objects.all()
         members = WorkspaceMember.objects.all()
+        clients = Client.objects.all()
         if scope is not None:
-            projects = projects.filter(workspace_id__in=scope)
+            all_projects = all_projects.filter(workspace_id__in=scope)
             members = members.filter(workspace_id__in=scope)
+            clients = clients.filter(workspace_id__in=scope)
 
-        users = User.objects.filter(id__in=members.values("user_id")).order_by("first_name", "last_name", "email")
+        projects = all_projects.filter(is_active=True) if active_only else all_projects
+        users = User.objects.filter(id__in=members.values("user_id"))
+        if active_only:
+            members = members.filter(is_active=True)
+            users = User.objects.filter(id__in=members.values("user_id"), is_active=True)
+        users = users.order_by("first_name", "last_name", "email")
+
         group_of = {}
         for uid, grp in members.exclude(group__isnull=True).values_list("user_id", "group"):
             group_of[uid] = grp
+        listed_ids = {u.id for u in users}
         group_counts = {}
-        for grp in group_of.values():
-            group_counts[grp] = group_counts.get(grp, 0) + 1
+        for uid, grp in group_of.items():
+            if uid in listed_ids:
+                group_counts[grp] = group_counts.get(grp, 0) + 1
+
+        project_info = {
+            p.id: p
+            for p in all_projects.select_related("client")
+        }
+        tasks = Task.objects.filter(project__in=all_projects).order_by("name")
+
         return Response({
             "groups": [
                 {"value": value, "label": label, "count": group_counts.get(value, 0)}
@@ -313,6 +346,25 @@ class CustomReportOptionsView(APIView):
                 {"id": str(p.id), "name": p.name, "job_code": p.job_code or ""}
                 for p in projects.order_by("name")
             ],
+            "clients": [
+                {"id": str(c.id), "name": c.name}
+                for c in clients.order_by("name")
+            ],
+            "tasks": [
+                {
+                    "id": str(t.id),
+                    "name": t.name,
+                    "project_id": str(t.project_id),
+                    "project_name": project_info[t.project_id].name if t.project_id in project_info else "",
+                    "job_code": (project_info[t.project_id].job_code or "") if t.project_id in project_info else "",
+                    "client_id": (
+                        str(project_info[t.project_id].client_id)
+                        if t.project_id in project_info and project_info[t.project_id].client_id else None
+                    ),
+                }
+                for t in tasks
+            ],
+            "project_clients": {str(p.id): str(p.client_id) for p in projects if p.client_id},
             "employees": [
                 {"id": str(u.id), "label": u.get_full_name() or u.email, "group": group_of.get(u.id)}
                 for u in users
