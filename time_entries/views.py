@@ -4,6 +4,8 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from rest_framework.views import APIView
 from django.db.models import Sum
+from django.db.models.functions import TruncDate
+from zoneinfo import ZoneInfo
 from collections import defaultdict
 from decimal import Decimal
 from datetime import datetime, date, timedelta
@@ -27,6 +29,7 @@ from projects.models import ProjectRole
 from projects.models import UserProjectRole
 from workspaces.models import WorkspaceMember
 from core.utils.logger import log_activity
+from core.utils.workspace_utils import resolve_target_user
 
 
 class TimeEntryViewSet(viewsets.ModelViewSet):
@@ -73,7 +76,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         if user_id_param:
             queryset = queryset.filter(user_id=user_id_param)
 
-        return self._filter_by_date_range(queryset)
+        return self._filter_by_date_range(queryset).select_related("task", "project")
 
     def _filter_by_date_range(self, queryset):
         """Apply ?start_date=&end_date= as an inclusive range on start_time's date.
@@ -103,13 +106,19 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
     # -----------------------------------------------------
 
     def perform_create(self, serializer):
-        user = self.request.user
+        # An admin may add time to another employee's timesheet by sending "for_user"; the entry then
+        # belongs to that employee (rate, approval week, 24h checks) and records the admin as its creator.
+        actor = self.request.user
+        user, target_workspace = resolve_target_user(actor, self.request.data.get("for_user"))
 
         # -------------  EXISTING CODE (untouched) --------------
-        wm = WorkspaceMember.objects.filter(user=user).first()
-        if not wm:
-            raise ValidationError("You are not a member of any workspace.")
-        workspace = wm.workspace
+        if target_workspace is not None:
+            workspace = target_workspace
+        else:
+            wm = WorkspaceMember.objects.filter(user=user).first()
+            if not wm:
+                raise ValidationError("You are not a member of any workspace.")
+            workspace = wm.workspace
 
         project = serializer.validated_data.get("project")
         job_title = serializer.validated_data.get("job_title")
@@ -143,7 +152,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         time_entry = serializer.save(
             user=user,
             workspace=workspace,
-            created_by=user,
+            created_by=actor,
             hourly_rate=hourly_rate,
             cost=cost,
             duration=int(duration_seconds // 60),
@@ -151,7 +160,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
         # Log activity
         log_activity(
-            user,
+            actor,
             action="CREATE",
             model_name="TimeEntry",
             object_id=time_entry.id,
@@ -186,7 +195,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
             end_date=end_week,
             defaults={
                 "status": "submitted",
-                "created_by": user,
+                "created_by": actor,
             }
         )
 
@@ -194,7 +203,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
             approval=approval,
             time_entry=time_entry,
             approved=True,
-            created_by=user
+            created_by=actor
         )
 
         return time_entry
@@ -802,6 +811,9 @@ class WeeklyHoursSummaryView(APIView):
         start_date  (YYYY-MM-DD)  — first day of the week  [required]
         end_date    (YYYY-MM-DD)  — last day of the week   [required]
         project_id  (uuid)        — filter to one project  [optional]
+        user_id     (uuid)        — another employee's week (admins / superusers only) [optional]
+        timezone    (IANA name)   — group hours by days in this time zone (the viewer's), so each grid
+                                    cell matches the entries the page lists for that day. Default: UTC.
 
     Returns day-by-day hours per project, a weekly total per project,
     and a grand total across all projects.
@@ -830,6 +842,14 @@ class WeeklyHoursSummaryView(APIView):
         if end_date < start_date:
             return Response({"error": "end_date must be >= start_date"}, status=400)
 
+        tz = None
+        tz_name = data.get("timezone")
+        if tz_name:
+            try:
+                tz = ZoneInfo(str(tz_name))
+            except Exception:
+                return Response({"error": "Invalid timezone"}, status=400)
+
         # Build ordered list of dates in the requested range
         week_days = []
         cursor = start_date
@@ -837,17 +857,17 @@ class WeeklyHoursSummaryView(APIView):
             week_days.append(cursor)
             cursor += timedelta(days=1)
 
-        # Base queryset — scoped to the authenticated user
-        qs = (
-            TimeEntry.objects
-            .filter(
-                user=request.user,
-                is_deleted=False,
-                start_time__date__gte=start_date,
-                start_time__date__lte=end_date,
+        # Base queryset — the authenticated user's, or the employee an admin is viewing
+        target_user, _workspace = resolve_target_user(request.user, data.get("user_id"))
+        qs = TimeEntry.objects.filter(user=target_user, is_deleted=False).select_related("project")
+        if tz is not None:
+            # Whole local days: [start of start_date, start of the day after end_date) in the viewer's zone
+            qs = qs.filter(
+                start_time__gte=datetime.combine(start_date, datetime.min.time(), tzinfo=tz),
+                start_time__lt=datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=tz),
             )
-            .select_related("project")
-        )
+        else:
+            qs = qs.filter(start_time__date__gte=start_date, start_time__date__lte=end_date)
 
         # Optional single-project filter
         project_id = data.get("project_id")
@@ -857,9 +877,10 @@ class WeeklyHoursSummaryView(APIView):
         # Aggregate: total duration (minutes) per project per day
         rows = (
             qs
-            .values("project_id", "project__name", "start_time__date")
+            .annotate(entry_day=TruncDate("start_time", tzinfo=tz))
+            .values("project_id", "project__name", "entry_day")
             .annotate(total_minutes=Sum("duration"))
-            .order_by("project__name", "start_time__date")
+            .order_by("project__name", "entry_day")
         )
 
         # Shape into {project_id: {day: hours, ...}}
@@ -870,7 +891,7 @@ class WeeklyHoursSummaryView(APIView):
         for row in rows:
             pid   = str(row["project_id"]) if row["project_id"] else "__no_project__"
             pname = row["project__name"]   or "No Project"
-            day   = row["start_time__date"].isoformat()
+            day   = row["entry_day"].isoformat()
             hrs   = round((row["total_minutes"] or 0) / 60, 2)
 
             project_meta[pid] = pname

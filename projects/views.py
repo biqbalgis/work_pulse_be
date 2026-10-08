@@ -21,6 +21,7 @@ from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser, IsWorkspaceAdminOrSuperUser
 from users.models import User
+from core.utils.workspace_utils import resolve_target_user
 
 
 def get_user_workspace(request):
@@ -528,8 +529,10 @@ class CurrentUserProjectRolesView(APIView):
         if not project_id:
             return Response({"error": "project_id query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # ?user_id=<uuid>: an admin looking up the roles of the employee whose timesheet they are working on
+        target_user, _workspace = resolve_target_user(request.user, request.query_params.get("user_id"))
         roles = UserProjectRole.objects.filter(
-            user=request.user, 
+            user=target_user,
             project_id=project_id,
             is_deleted=False).select_related("job_title")
 

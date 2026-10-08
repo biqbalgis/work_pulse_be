@@ -40,17 +40,27 @@ class TimeEntrySerializer(serializers.ModelSerializer):
     # Input serializer for POST/PATCH — not a model field, handled in perform_create/perform_update
     asset_inputs = AssetUsageInputSerializer(many=True, write_only=True, required=False)
 
+    # Names for display, so lists (e.g. the Timesheet's "View Activities") don't have to show raw IDs
+    task_name = serializers.SerializerMethodField()
+    project_name = serializers.SerializerMethodField()
+
     class Meta:
         model = TimeEntry
         fields = [
-            "id","user","workspace","project","task","job_title","description",
+            "id","user","workspace","project","project_name","task","task_name","job_title","description",
             "start_time","end_time","duration","hourly_rate","cost","billable",
             "meals","hotels","assets","asset_inputs","created_at","created_by"
         ]
         read_only_fields = [
             "id","user","workspace","duration","hourly_rate","cost",
-            "created_at","created_by","assets"
+            "created_at","created_by","assets","task_name","project_name"
         ]
+
+    def get_task_name(self, obj):
+        return obj.task.name if obj.task_id else None
+
+    def get_project_name(self, obj):
+        return obj.project.name if obj.project_id else None
 
     def create(self, validated_data):
         # asset_inputs is not a model field — it's consumed by perform_create
