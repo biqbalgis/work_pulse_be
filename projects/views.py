@@ -52,7 +52,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         # Base queryset: only active projects and not deleted
-        queryset = Project.objects.filter(is_deleted=False, is_active=True)
+        # workspace/client names are read by ProjectSerializer for every row -> JOIN them in
+        queryset = Project.objects.filter(is_deleted=False, is_active=True).select_related('workspace', 'client')
 
         if user.is_superuser:
             # Superuser MUST provide workspace parameter
@@ -481,7 +482,8 @@ class UserProjectRoleViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         request_user = self.request.user
-        base_qs = UserProjectRole.objects.select_related('user', 'project', 'job_title')
+        # workspace is read for `workspace_name` on every row, so it joins in with the rest
+        base_qs = UserProjectRole.objects.select_related('user', 'project', 'job_title', 'workspace')
 
         if request_user.is_superuser:
             workspace_id = self.request.query_params.get('workspace')

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from django.db.models import Case, CharField, F, Value, When
+from django.db.models import Case, CharField, F, Prefetch, Value, When, prefetch_related_objects
 from rest_framework import filters, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -55,8 +55,41 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
 
         return queryset
 
-    def _serialize_approval_summary(self, approval, request):
-        items = approval.items.select_related("time_entry__project")
+    def _approver_context(self, user, approvals):
+        """The caller's and the employees' memberships for the whole page in two queries, for can_approve."""
+        if user.is_superuser:
+            return {"superuser": True}
+        workspace_ids = {a.workspace_id for a in approvals}
+        user_ids = {a.user_id for a in approvals}
+        return {
+            "superuser": False,
+            "approvers": {m.workspace_id: m for m in WorkspaceMember.objects.filter(user=user, workspace_id__in=workspace_ids)},
+            "employees": {
+                (m.user_id, m.workspace_id): m
+                for m in WorkspaceMember.objects.filter(user_id__in=user_ids, workspace_id__in=workspace_ids)
+            },
+        }
+
+    @staticmethod
+    def _can_approve_from_context(context, request_user, approval):
+        """Same rules as approvals.utils.can_approve, answered from the preloaded memberships."""
+        if context["superuser"]:
+            return True
+        approver = context["approvers"].get(approval.workspace_id)
+        employee = context["employees"].get((approval.user_id, approval.workspace_id))
+        if not approver or not employee:
+            return False
+        if employee.manager_id:
+            return employee.manager_id == request_user.id or approver.role == "admin"
+        return approver.role == "admin"
+
+    def _serialize_approval_summary(self, approval, request, context=None):
+        if context is None:
+            items = approval.items.select_related("time_entry__project")
+            entries_count = items.count()
+        else:
+            items = list(approval.items.all())  # prefetched by list()
+            entries_count = len(items)
         metrics = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
 
         return {
@@ -70,7 +103,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
                 "end_date": approval.end_date,
                 "type": "day" if approval.start_date == approval.end_date else "week"
             },
-            "entries_count": items.count(),
+            "entries_count": entries_count,
             "hours": {
                 "total": metrics["total_hours"],
                 "regular": metrics["rt_hours"],
@@ -80,7 +113,11 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
                 "total": metrics["total_cost"]
             },
             "status": approval.status,
-            "can_approve": can_approve(request.user, approval.user, approval.workspace)
+            "can_approve": (
+                can_approve(request.user, approval.user, approval.workspace)
+                if context is None
+                else self._can_approve_from_context(context, request.user, approval)
+            ),
         }
 
     # ========== EMPLOYEE SUBMITS WEEK ==========
@@ -88,9 +125,16 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())
 
         page = self.paginate_queryset(queryset)
-        approvals = page if page is not None else queryset
+        approvals = [a for a in (page if page is not None else queryset)]
 
-        data = [self._serialize_approval_summary(approval, request) for approval in approvals]
+        # One query for all the page's items (with their entry + project) and two for the memberships,
+        # instead of ~3 queries per approval.
+        prefetch_related_objects(
+            approvals,
+            Prefetch("items", queryset=TimeEntryApprovalItem.objects.select_related("time_entry__project")),
+        )
+        context = self._approver_context(request.user, approvals)
+        data = [self._serialize_approval_summary(approval, request, context) for approval in approvals]
 
         if page is not None:
             return self.get_paginated_response(data)

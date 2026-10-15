@@ -10,6 +10,10 @@ class ActivityLoggingMiddleware(MiddlewareMixin):
             return None
 
         if request.path.startswith("/api"):
+            # Audit trail = changes. Plain reads (GET/HEAD/OPTIONS) are the bulk of the traffic and would add a DB
+            # write to every one of them, so they are not logged.
+            if request.method in ("GET", "HEAD", "OPTIONS"):
+                return None
             user = request.user if request.user.is_authenticated else None
             ip = get_client_ip(request)
             ua = request.META.get('HTTP_USER_AGENT', '')

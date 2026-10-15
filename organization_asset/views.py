@@ -45,7 +45,8 @@ class OrganizationAssetViewSet(viewsets.ModelViewSet):
         # "Rate" has no single backend column — hourly vs quantity charge types
         # store their rate in different fields — so annotate the effective one
         # to make the column sortable.
-        qs = qs.annotate(
+        # project/workspace names are read for every asset by the serializer -> JOIN them in
+        qs = qs.select_related("project", "workspace").annotate(
             effective_rate=Case(
                 When(charge_type='hourly', then=F('hourly_rate')),
                 When(charge_type='quantity', then=F('quantity_rate')),

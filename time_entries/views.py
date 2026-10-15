@@ -76,7 +76,12 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         if user_id_param:
             queryset = queryset.filter(user_id=user_id_param)
 
-        return self._filter_by_date_range(queryset).select_related("task", "project")
+        queryset = self._filter_by_date_range(queryset).select_related("task", "project")
+        if getattr(self, "action", None) == "list":
+            # the list serializer reads each entry's asset usages and each usage's asset; fetching them in two
+            # queries for the whole page replaces one-or-more queries per entry (writes/retrieve are unaffected)
+            queryset = queryset.prefetch_related("asset_usages__asset")
+        return queryset
 
     def _filter_by_date_range(self, queryset):
         """Apply ?start_date=&end_date= as an inclusive range on start_time's date.
@@ -586,7 +591,7 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
         user = self.request.user
 
         if user.is_superuser:
-            return TimeEntry.objects.filter(is_deleted=False)
+            return TimeEntry.objects.select_related("user").filter(is_deleted=False)
 
         memberships = WorkspaceMember.objects.filter(
             user=user,

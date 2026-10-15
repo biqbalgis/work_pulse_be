@@ -5,7 +5,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: gunicorn work_pulse_be.wsgi:application --bind 0.0.0.0:8000
+    # Worker/thread counts can be tuned from .env without editing this file (GUNICORN_WORKERS, GUNICORN_THREADS,
+    # GUNICORN_TIMEOUT). Database connections per server = workers x threads (default 3 x 2 = 6): keep that
+    # below the managed Postgres connection limit. $$ passes the variables through to the container's shell.
+    command: >
+      sh -c "exec gunicorn work_pulse_be.wsgi:application
+      --bind 0.0.0.0:8000
+      --workers $${GUNICORN_WORKERS:-3}
+      --threads $${GUNICORN_THREADS:-2}
+      --timeout $${GUNICORN_TIMEOUT:-60}
+      --max-requests 1000
+      --max-requests-jitter 100"
     expose:
       - 8000
     env_file:

@@ -197,7 +197,7 @@ class ReportDashboardSummaryView(_ReportDashboardBase):
 
         rows = [
             {"d": d, "u": u, "p": p, "t": t, "b": b, "desc": desc, "m": m, "n": n, "c": round(c, 2)}
-            for (d, u, p, t, b, desc), (m, n, c) in sorted(facts.items(), key=lambda kv: kv[0])
+            for (d, u, p, t, b, desc), (m, n, c) in sorted(facts.items(), key=lambda kv: tuple("" if part is None else part for part in kv[0]))
         ]
         return Response({
             "date_from": date_from.isoformat(),
