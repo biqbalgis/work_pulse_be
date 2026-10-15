@@ -2,6 +2,7 @@ import traceback
 from django.utils.deprecation import MiddlewareMixin
 from core.models import ErrorLog
 from core.utils.logger import get_client_ip
+from core.utils.redaction import safe_body_for_log
 
 class ErrorLoggingMiddleware(MiddlewareMixin):
     """
@@ -23,7 +24,7 @@ class ErrorLoggingMiddleware(MiddlewareMixin):
             method=request.method,
             ip_address=ip,
             user_agent=ua,
-            extra_data={"params": dict(request.GET), "body": request.body.decode('utf-8', errors='ignore')},
+            extra_data={"params": dict(request.GET), "body": safe_body_for_log(request)},
         )
 
         # Let Django handle the response (still shows DRF error to client)

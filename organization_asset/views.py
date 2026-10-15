@@ -4,6 +4,10 @@ from rest_framework.exceptions import ValidationError
 from .models import OrganizationAsset
 from .serializers import OrganizationAssetSerializer
 from workspaces.models import WorkspaceMember
+from workspaces.permissions import require_workspace_role
+
+# Asset rates feed cost calculations, so changing assets is admin/manager-only (reading is unchanged).
+ASSET_WRITE_DENIED = "Only a workspace admin or manager can change assets."
 
 
 class OrganizationAssetViewSet(viewsets.ModelViewSet):
@@ -64,10 +68,18 @@ class OrganizationAssetViewSet(viewsets.ModelViewSet):
                 raise ValidationError("You are not part of any workspace.")
             workspace = wm.workspace
 
+        require_workspace_role(user, workspace, message=ASSET_WRITE_DENIED)
         serializer.save(workspace=workspace)
 
     def perform_update(self, serializer):
         instance = self.get_object()
         project = serializer.validated_data.get("project", instance.project)
         workspace = project.workspace if project else instance.workspace
+        require_workspace_role(self.request.user, instance.workspace, message=ASSET_WRITE_DENIED)
+        if workspace.pk != instance.workspace_id:
+            require_workspace_role(self.request.user, workspace, message=ASSET_WRITE_DENIED)
         serializer.save(workspace=workspace)
+
+    def perform_destroy(self, instance):
+        require_workspace_role(self.request.user, instance.workspace, message=ASSET_WRITE_DENIED)
+        instance.delete()

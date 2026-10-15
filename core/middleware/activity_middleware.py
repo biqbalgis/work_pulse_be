@@ -1,7 +1,8 @@
-import json
 from django.utils.deprecation import MiddlewareMixin
 from core.models import ActivityLog
 from core.utils.logger import get_client_ip
+from core.utils.redaction import redact_sensitive_data, safe_body_for_log
+
 
 class ActivityLoggingMiddleware(MiddlewareMixin):
     def process_view(self, request, view_func, view_args, view_kwargs):
@@ -13,13 +14,9 @@ class ActivityLoggingMiddleware(MiddlewareMixin):
             ip = get_client_ip(request)
             ua = request.META.get('HTTP_USER_AGENT', '')
 
-            body = None
-            try:
-                if request.body:
-                    body_data = json.loads(request.body.decode("utf-8"))
-                    body = self.redact_sensitive_data(body_data)
-            except Exception:
-                body = str(request.body)
+            # Redacted JSON / form fields; for anything else (uploads, unparseable or huge bodies) only the
+            # content type and size are stored, never the raw bytes, which may contain passwords.
+            body = safe_body_for_log(request)
 
             ActivityLog.objects.create(
                 user=user,
@@ -36,20 +33,5 @@ class ActivityLoggingMiddleware(MiddlewareMixin):
         return None
 
     def redact_sensitive_data(self, data):
-        """
-        Recursively redact sensitive keys in a dictionary or list.
-        """
-        SENSITIVE_KEYS = {'password', 'refresh', 'access', 'token', 'secret', 'confirm_password'}
-        
-        if isinstance(data, dict):
-            new_data = data.copy()
-            for key, value in new_data.items():
-                if key.lower() in SENSITIVE_KEYS:
-                    new_data[key] = "[REDACTED]"
-                else:
-                    new_data[key] = self.redact_sensitive_data(value)
-            return new_data
-        elif isinstance(data, list):
-            return [self.redact_sensitive_data(item) for item in data]
-        else:
-            return data
+        """Kept for compatibility; the logic lives in core.utils.redaction."""
+        return redact_sensitive_data(data)

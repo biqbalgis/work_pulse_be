@@ -1,5 +1,6 @@
 from rest_framework import viewsets, permissions, serializers, status, generics
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -25,7 +26,7 @@ from .serializers import (
     UserSerializer,
     _workspace_logo_url,
 )
-from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser
+from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser, MANAGE_ROLES, get_member_role
 from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
 from core.utils.logger import log_activity, log_error
 
@@ -267,10 +268,26 @@ class EmailLoginView(TokenObtainPairView):
 
 
 class RegisterView(generics.CreateAPIView):
+    """
+    Create a user + workspace membership (the Team / Organizations "add member" forms).
+
+    Superusers may create users anywhere. Everyone else must be an admin or manager of the workspace they are
+    creating the user in, and only an admin may create another admin.
+    """
     serializer_class = RegisterSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]  # superuser/admins can create
+    permission_classes = [permissions.IsAuthenticated]
 
     def perform_create(self, serializer):
+        actor = self.request.user
+        if not actor.is_superuser:
+            workspace_id = serializer.validated_data.get("workspace_id")
+            if workspace_id:  # without one, the serializer itself rejects a non-superuser
+                caller_role = get_member_role(actor, workspace_id)
+                if caller_role not in MANAGE_ROLES:
+                    raise PermissionDenied("Only an admin or manager of this workspace can create users.")
+                if serializer.validated_data.get("role", "user") == "admin" and caller_role != "admin":
+                    raise PermissionDenied("Only an admin can create another admin.")
+
         user = self.request.user if self.request.user.is_authenticated else None
         new_user = serializer.save()
         if user:

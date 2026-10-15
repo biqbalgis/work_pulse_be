@@ -19,7 +19,7 @@ from .serializers import (
 )
 from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
-from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser, IsWorkspaceAdminOrSuperUser
+from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser, IsWorkspaceAdminOrSuperUser, require_workspace_role
 from users.models import User
 from core.utils.workspace_utils import resolve_target_user
 
@@ -197,6 +197,11 @@ class JobTitleViewSet(viewsets.ModelViewSet):
         instance.delete()
 
 
+# Project roles and per-user rates decide the cost of every hour logged, so changing them is admin/manager-only.
+# (Reading them is unchanged.)
+RATE_WRITE_DENIED = "Only a workspace admin or manager can change roles and rates."
+
+
 class ProjectRoleViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectRoleSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -224,16 +229,21 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         project = serializer.validated_data.get('project')
         _ensure_user_in_workspace(self.request.user, project.workspace if project else None)
+        require_workspace_role(self.request.user, project.workspace if project else None, message=RATE_WRITE_DENIED)
         project_role = serializer.save()
         log_activity(self.request.user, "CREATE", "ProjectRole", project_role.id, request=self.request)
 
     def perform_update(self, serializer):
         project = serializer.validated_data.get('project', serializer.instance.project)
         _ensure_user_in_workspace(self.request.user, project.workspace if project else None)
+        require_workspace_role(self.request.user, serializer.instance.workspace, message=RATE_WRITE_DENIED)
+        if project and project.workspace_id != serializer.instance.workspace_id:
+            require_workspace_role(self.request.user, project.workspace, message=RATE_WRITE_DENIED)
         project_role = serializer.save()
         log_activity(self.request.user, "UPDATE", "ProjectRole", project_role.id, request=self.request)
 
     def perform_destroy(self, instance):
+        require_workspace_role(self.request.user, instance.workspace, message=RATE_WRITE_DENIED)
         log_activity(self.request.user, "DELETE", "ProjectRole", instance.id, request=self.request)
         instance.delete()
 
@@ -305,6 +315,7 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         user = request.user
 
         project = self._get_project_for_request(request, project_id)
+        require_workspace_role(request.user, project.workspace, message=RATE_WRITE_DENIED)
 
         # Step 1: Create or get job title
         job_title, created = self._get_or_create_job_title(project.workspace, job_title_name)
@@ -330,6 +341,7 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         project = self._get_project_for_request(request, serializer.validated_data["project"])
+        require_workspace_role(request.user, project.workspace, message=RATE_WRITE_DENIED)
         job_title_name = serializer.validated_data["job_title_name"].strip()
         hourly_rate = serializer.validated_data["hourly_rate"]
         user_ids = serializer.validated_data["users"]
@@ -398,6 +410,7 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
 
         # Validates the project exists and the requester belongs to its workspace.
         project = self._get_project_for_request(request, project_id)
+        require_workspace_role(request.user, project.workspace, message=RATE_WRITE_DENIED)
 
         if not WorkspaceMember.objects.filter(user_id=user_id, workspace=project.workspace).exists():
             raise ValidationError("User does not belong to this workspace.")
@@ -493,6 +506,8 @@ class UserProjectRoleViewSet(viewsets.ModelViewSet):
 
         # Requester must belong to the project's own workspace...
         _ensure_user_in_workspace(self.request.user, project.workspace if project else None)
+        # ...and, because this sets what an hour of someone's time costs, be an admin/manager of it.
+        require_workspace_role(self.request.user, project.workspace if project else None, message=RATE_WRITE_DENIED)
         # ...and the target user must too (data integrity: a role only makes
         # sense for a user who's actually in that workspace).
         if project and not WorkspaceMember.objects.filter(user=user, workspace=project.workspace).exists():
@@ -507,6 +522,9 @@ class UserProjectRoleViewSet(viewsets.ModelViewSet):
         project = serializer.validated_data.get("project", instance.project)
 
         _ensure_user_in_workspace(self.request.user, project.workspace if project else None)
+        require_workspace_role(self.request.user, instance.workspace, message=RATE_WRITE_DENIED)
+        if project and project.workspace_id != instance.workspace_id:
+            require_workspace_role(self.request.user, project.workspace, message=RATE_WRITE_DENIED)
         if project and not WorkspaceMember.objects.filter(user=user, workspace=project.workspace).exists():
             raise ValidationError("User does not belong to this workspace.")
 
@@ -514,6 +532,7 @@ class UserProjectRoleViewSet(viewsets.ModelViewSet):
         log_activity(self.request.user, "UPDATE", "UserProjectRole", upr.id, request=self.request)
 
     def perform_destroy(self, instance):
+        require_workspace_role(self.request.user, instance.workspace, message=RATE_WRITE_DENIED)
         log_activity(self.request.user, "DELETE", "UserProjectRole", instance.id, request=self.request)
         instance.delete()
 

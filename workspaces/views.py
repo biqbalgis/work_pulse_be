@@ -1,9 +1,11 @@
 from rest_framework import viewsets, permissions, filters
+from rest_framework.exceptions import PermissionDenied
 from django.db.models import Count, IntegerField, OuterRef, Prefetch, Subquery
 from django.db.models.functions import Coalesce
 from .models import Workspace, WorkspaceMember
 from .serializers import WorkspaceSerializer, WorkspaceMemberSerializer
 from core.utils.logger import log_activity
+from .permissions import ADMIN_ONLY, MANAGE_ROLES, get_member_role, has_workspace_role, require_workspace_role
 
 
 class WorkspaceViewSet(viewsets.ModelViewSet):
@@ -52,6 +54,12 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
+        # New workspaces are made by superusers or by existing workspace admins; a plain member (or anyone else)
+        # cannot spawn a workspace and thereby become an admin.
+        if not user.is_superuser and not WorkspaceMember.objects.filter(
+            user=user, role="admin", is_active=True
+        ).exists():
+            raise PermissionDenied("Only an admin can create a workspace.")
         workspace = serializer.save(created_by=user)
 
         # Automatically make the creator an admin
@@ -62,6 +70,14 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
         )
         log_activity(user, "CREATE", "Workspace", workspace.id, request=self.request)
         return workspace
+
+    def perform_update(self, serializer):
+        require_workspace_role(self.request.user, serializer.instance, ADMIN_ONLY, "Only a workspace admin can change it.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        require_workspace_role(self.request.user, instance, ADMIN_ONLY, "Only a workspace admin can delete it.")
+        instance.delete()
 
 
 class WorkspaceMemberViewSet(viewsets.ModelViewSet):
@@ -101,3 +117,40 @@ class WorkspaceMemberViewSet(viewsets.ModelViewSet):
             qs = qs.filter(group=group)
 
         return qs.select_related("user", "workspace")
+
+    # Writes: admins (and managers, for non-admin members) of the member's workspace — never a plain member.
+    # Reads above are unchanged.
+    def perform_create(self, serializer):
+        workspace = serializer.validated_data["workspace"]
+        require_workspace_role(self.request.user, workspace, ADMIN_ONLY, "Only a workspace admin can add members.")
+        serializer.save()
+
+    def perform_update(self, serializer):
+        member = serializer.instance
+        actor = self.request.user
+        data = serializer.validated_data
+
+        # A membership is never moved to another workspace or user.
+        if ("workspace" in data and data["workspace"].pk != member.workspace_id) or (
+            "user" in data and data["user"].pk != member.user_id
+        ):
+            raise PermissionDenied("A membership cannot be moved to another workspace or user.")
+
+        require_workspace_role(actor, member.workspace, MANAGE_ROLES, "Only a workspace admin or manager can edit members.")
+
+        if not actor.is_superuser:
+            caller_role = get_member_role(actor, member.workspace)
+            new_role = data.get("role", member.role)
+            if new_role != member.role:
+                if member.user_id == actor.id:
+                    raise PermissionDenied("You cannot change your own role.")
+                if caller_role != "admin" and (new_role == "admin" or member.role == "admin"):
+                    raise PermissionDenied("Only an admin can grant or change the admin role.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        actor = self.request.user
+        require_workspace_role(actor, instance.workspace, MANAGE_ROLES, "Only a workspace admin or manager can remove members.")
+        if instance.role == "admin" and not has_workspace_role(actor, instance.workspace, ADMIN_ONLY):
+            raise PermissionDenied("Only an admin can remove an admin.")
+        instance.delete()

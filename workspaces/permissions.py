@@ -111,3 +111,38 @@ class IsWorkspaceAdminOrSuperUser(BasePermission):
 
         # Allow WRITE only for workspace admin
         return WorkspaceMember.objects.filter(user=user, role="admin").exists()
+
+# ── Per-workspace role checks for WRITES ─────────────────────────────────────
+# The classes above decide access from one arbitrary membership. These helpers answer the precise question
+# "does this user hold one of these roles IN THIS workspace?" (one small indexed lookup, only on writes).
+
+MANAGE_ROLES = ("admin", "manager")
+ADMIN_ONLY = ("admin",)
+
+
+def get_member_role(user, workspace):
+    """The user's active role in `workspace` (a Workspace or its id), or None."""
+    workspace_id = getattr(workspace, "pk", workspace)
+    return (
+        WorkspaceMember.objects.filter(user=user, workspace_id=workspace_id, is_active=True)
+        .values_list("role", flat=True)
+        .first()
+    )
+
+
+def has_workspace_role(user, workspace, roles=MANAGE_ROLES):
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    if workspace is None:
+        return False
+    return get_member_role(user, workspace) in roles
+
+
+def require_workspace_role(user, workspace, roles=MANAGE_ROLES, message="You do not have permission to do this in this workspace."):
+    """Raise 403 unless the user holds one of `roles` in `workspace` (superusers always pass)."""
+    from rest_framework.exceptions import PermissionDenied
+
+    if not has_workspace_role(user, workspace, roles):
+        raise PermissionDenied(message)
