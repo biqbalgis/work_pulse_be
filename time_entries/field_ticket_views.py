@@ -29,14 +29,10 @@ from .serializers import FieldTicketEntrySerializer, resolve_quantity_used
 User = get_user_model()
 
 
-@transaction.atomic
-def create_field_ticket_entry(request, data):
-    """Validate, create one TimeEntry + its AssetUsages, wire up approval.
-
-    Shared by FieldTicketBulkEntryView and any other endpoint that accepts
-    the same per-entry payload shape (e.g. the Envision "field ticket LEM
-    from payload" endpoint).
-    """
+def _resolve_entry_values(data):
+    """Validate one payload row and work out everything a TimeEntry needs from it: the target user and
+    workspace, the hourly rate (user-project-role first, then project-role), the UTC start/end and the cost.
+    Raises ValueError on anything that can't be saved."""
 
     # 1. Resolve target user
     target_user = User.objects.filter(id=data["user"]).first()
@@ -85,29 +81,21 @@ def create_field_ticket_entry(request, data):
 
     duration_secs  = (end_dt - start_dt).total_seconds()
     duration_hours = Decimal(duration_secs / 3600).quantize(Decimal("0.01"))
-    cost           = duration_hours * Decimal(hourly_rate)
 
-    # 5. Save TimeEntry
-    time_entry = TimeEntry.objects.create(
-        user=target_user,
-        workspace=workspace,
-        project_id=project_id,
-        job_title_id=job_title_id,
-        task_id=data.get("task"),
-        description=data.get("description", ""),
-        start_time=start_dt,
-        end_time=end_dt,
-        duration=int(duration_secs // 60),
-        hourly_rate=hourly_rate,
-        cost=cost,
-        billable=data.get("billable", False),
-        meals=data.get("meals", False),
-        hotels=data.get("hotels", False),
-        created_by=request.user,
-    )
+    return {
+        "user": target_user,
+        "workspace": workspace,
+        "hourly_rate": hourly_rate,
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "duration_minutes": int(duration_secs // 60),
+        "duration_hours": duration_hours,
+        "cost": duration_hours * Decimal(hourly_rate),
+    }
 
-    # 6. Save AssetUsages
-    for asset_item in data.get("assets", []):
+
+def _create_asset_usages(time_entry, assets, duration_hours):
+    for asset_item in assets:
         asset = OrganizationAsset.objects.filter(id=asset_item["asset_id"]).first()
         if not asset:
             raise ValueError(f"Asset {asset_item['asset_id']} not found.")
@@ -120,32 +108,9 @@ def create_field_ticket_entry(request, data):
         usage.cost = usage.calculate_cost(duration_hours)
         usage.save()
 
-    # 7. Activity log
-    log_activity(
-        request.user,
-        action="CREATE",
-        model_name="TimeEntry",
-        object_id=time_entry.id,
-        request=request,
-    )
 
-    # 8. Auto-approval
-    start_week, end_week = get_week_bounds(entry_date)
-    approval, _ = TimeEntryApproval.objects.get_or_create(
-        workspace=workspace,
-        user=target_user,
-        start_date=start_week,
-        end_date=end_week,
-        defaults={"status": "submitted", "created_by": target_user},
-    )
-    TimeEntryApprovalItem.objects.create(
-        approval=approval,
-        time_entry=time_entry,
-        approved=True,
-        created_by=request.user,
-    )
-
-    # Keep total_hours on the approval in sync
+def sync_approval_total(approval):
+    """Recompute an approval's total_hours from its entries that are still active."""
     total_minutes = (
         TimeEntryApprovalItem.objects
         .filter(approval=approval, time_entry__is_deleted=False)
@@ -155,7 +120,145 @@ def create_field_ticket_entry(request, data):
     approval.total_hours = Decimal(total_minutes) / Decimal(60)
     approval.save(update_fields=["total_hours"])
 
+
+def _approve_entry_in_week(request, time_entry, workspace, user, entry_date):
+    """Attach the entry to the user's weekly approval (created if needed) as an approved item."""
+    start_week, end_week = get_week_bounds(entry_date)
+    approval, _ = TimeEntryApproval.objects.get_or_create(
+        workspace=workspace,
+        user=user,
+        start_date=start_week,
+        end_date=end_week,
+        defaults={"status": "submitted", "created_by": user},
+    )
+    TimeEntryApprovalItem.objects.create(
+        approval=approval,
+        time_entry=time_entry,
+        approved=True,
+        created_by=request.user,
+    )
+    return approval
+
+
+@transaction.atomic
+def create_field_ticket_entry(request, data):
+    """Validate, create one TimeEntry + its AssetUsages, wire up approval.
+
+    Shared by FieldTicketBulkEntryView and any other endpoint that accepts
+    the same per-entry payload shape (e.g. the Envision "field ticket LEM
+    from payload" endpoint).
+    """
+    values = _resolve_entry_values(data)
+    entry_date = data["date"]
+
+    # 5. Save TimeEntry
+    time_entry = TimeEntry.objects.create(
+        user=values["user"],
+        workspace=values["workspace"],
+        project_id=data["project"],
+        job_title_id=data["job_title"],
+        task_id=data.get("task"),
+        description=data.get("description", ""),
+        start_time=values["start_dt"],
+        end_time=values["end_dt"],
+        duration=values["duration_minutes"],
+        hourly_rate=values["hourly_rate"],
+        cost=values["cost"],
+        billable=data.get("billable", False),
+        meals=data.get("meals", False),
+        hotels=data.get("hotels", False),
+        created_by=request.user,
+    )
+
+    # 6. Save AssetUsages
+    _create_asset_usages(time_entry, data.get("assets", []), values["duration_hours"])
+
+    # 7. Activity log
+    log_activity(
+        request.user,
+        action="CREATE",
+        model_name="TimeEntry",
+        object_id=time_entry.id,
+        request=request,
+    )
+
+    # 8. Auto-approval, keeping total_hours on the approval in sync
+    approval = _approve_entry_in_week(request, time_entry, values["workspace"], values["user"], entry_date)
+    sync_approval_total(approval)
+
     return time_entry
+
+
+@transaction.atomic
+def update_field_ticket_entry(request, time_entry, data):
+    """Apply a payload row to an existing field-ticket TimeEntry (a revision edit).
+
+    Admin override: the entry's lock and its approval do not stop the edit — the approval simply gets its
+    total recalculated (and the entry moved to another weekly approval if its employee or week changed).
+    Asset usages are replaced by the ones in the payload. Returns the approvals whose totals were touched
+    (already synced).
+    """
+    values = _resolve_entry_values(data)
+    entry_date = data["date"]
+
+    time_entry.user = values["user"]
+    time_entry.workspace = values["workspace"]
+    time_entry.project_id = data["project"]
+    time_entry.job_title_id = data["job_title"]
+    time_entry.task_id = data.get("task")
+    time_entry.description = data.get("description", "")
+    time_entry.start_time = values["start_dt"]
+    time_entry.end_time = values["end_dt"]
+    time_entry.duration = values["duration_minutes"]
+    time_entry.hourly_rate = values["hourly_rate"]
+    time_entry.cost = values["cost"]
+    time_entry.billable = data.get("billable", False)
+    time_entry.meals = data.get("meals", False)
+    time_entry.hotels = data.get("hotels", False)
+    time_entry.save()
+
+    for usage in list(time_entry.asset_usages.all()):
+        usage.delete()
+    _create_asset_usages(time_entry, data.get("assets", []), values["duration_hours"])
+
+    log_activity(
+        request.user,
+        action="UPDATE",
+        model_name="TimeEntry",
+        object_id=time_entry.id,
+        request=request,
+    )
+
+    # Re-home the entry if the employee or week no longer matches its approval.
+    start_week, end_week = get_week_bounds(entry_date)
+    touched = []
+    keep = None
+    for item in TimeEntryApprovalItem.objects.filter(time_entry=time_entry).select_related("approval"):
+        approval = item.approval
+        if (
+            keep is None
+            and approval.user_id == values["user"].id
+            and approval.start_date == start_week
+            and approval.end_date == end_week
+        ):
+            keep = item
+            if not item.approved:
+                item.approved = True
+                item.save(update_fields=["approved"])
+            touched.append(approval)
+        else:
+            item.delete()
+            touched.append(approval)
+    if keep is None:
+        touched.append(_approve_entry_in_week(request, time_entry, values["workspace"], values["user"], entry_date))
+
+    synced = {approval.pk: approval for approval in touched}
+    for approval in synced.values():
+        if TimeEntryApprovalItem.objects.filter(approval=approval).exists():
+            sync_approval_total(approval)
+        else:
+            approval.delete()
+    return list(synced.values())
 
 
 class FieldTicketBulkEntryView(APIView):

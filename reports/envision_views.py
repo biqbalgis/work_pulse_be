@@ -7,8 +7,12 @@ Envision GEO — LEM Report API Views
   GET  /api/reports/envision/lem/list/                   — List field tickets (paginated/searchable)
   GET  /api/reports/envision/lem/download/               — Re-download a field ticket's original PDF
   POST /api/reports/envision/lem/void/                   — Void a LEM (soft-delete LEM + its time entries)
+  GET  /api/reports/envision/lem/entries/                — A Field Ticket LEM's time entries (to open it for revision)
+  POST /api/reports/envision/lem/revise/                 — Revise a Field Ticket LEM (FTF- only, admins): "000012-R01", "-R02"...
+  GET  /api/reports/envision/lem/history/                — Every issued revision of a field ticket
 """
 
+import re
 from collections import OrderedDict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -16,6 +20,7 @@ from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.db.models import Q, Sum
 from django.http import FileResponse
+from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -24,12 +29,16 @@ from approvals.models import TimeEntryApproval, TimeEntryApprovalItem
 from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
 from projects.models import Project
 from tasks.models import Task
-from time_entries.field_ticket_views import create_field_ticket_entry
+from time_entries.field_ticket_views import (
+    create_field_ticket_entry,
+    sync_approval_total,
+    update_field_ticket_entry,
+)
 from time_entries.models import TimeEntry
 from time_entries.serializers import FieldTicketEntrySerializer
 from workspaces.models import WorkspaceMember
-from workspaces.permissions import IsWorkspaceUser
-from .models import LEMReport
+from workspaces.permissions import ADMIN_ONLY, IsWorkspaceUser, has_workspace_role
+from .models import LEMReport, LEMRevision, format_display_number
 from .envision_pdf_utils import generate_envision_lem_pdf
 from .envision_costing_pdf_utils import generate_envision_costing_pdf
 from .envision_costing_excel_utils import generate_envision_costing_xlsx
@@ -270,7 +279,7 @@ class EnvisionLEMReportView(APIView):
             )
             lem_report.save()
 
-        ft_display_number = lem_report.lem_number.replace(FT_DB_PREFIX, "")
+        ft_display_number = lem_report.display_number
 
         # ── Build PDF data fresh from current time entries every time ────────
         pdf_data = {
@@ -545,6 +554,11 @@ class EnvisionFieldTicketListView(APIView):
             .select_related("project", "project__workspace", "requester")
         )
 
+        # Workspaces where this user may revise tickets (None = all, for superusers).
+        self._revise_workspace_ids = None if user.is_superuser else set(
+            WorkspaceMember.objects.filter(user=user, role="admin", is_active=True).values_list("workspace_id", flat=True)
+        )
+
         if user.is_superuser:
             workspace_id = request.GET.get("workspace")
             if workspace_id:
@@ -562,7 +576,12 @@ class EnvisionFieldTicketListView(APIView):
 
         search = request.GET.get("search", "").strip()
         if search:
-            qs = qs.filter(Q(lem_number__icontains=search) | Q(project__name__icontains=search))
+            revision_match = re.match(r"^(.+?)-r(\d+)$", search, re.IGNORECASE)
+            if revision_match:
+                # "000012-R01": the number plus that revision
+                qs = qs.filter(lem_number__icontains=revision_match.group(1), revision=int(revision_match.group(2)))
+            else:
+                qs = qs.filter(Q(lem_number__icontains=search) | Q(project__name__icontains=search))
 
         date_from = request.GET.get("date_from")
         date_to = request.GET.get("date_to")
@@ -593,6 +612,11 @@ class EnvisionFieldTicketListView(APIView):
         return {
             "id": lem.id,
             "lem_number": lem.lem_number,
+            "revision": lem.revision,
+            "display_number": lem.display_number,
+            "can_revise": lem.lem_number.startswith(REVISABLE_PREFIX) and (
+                self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
+            ),
             "project_name": lem.project.name if lem.project else "-",
             "created_at": lem.created_at,
             "created_by": lem.requester.get_full_name() if lem.requester else "-",
@@ -691,16 +715,32 @@ class EnvisionFieldTicketDownloadView(APIView):
             if not is_elevated:
                 return Response({"error": "You do not have permission to download this field ticket."}, status=403)
 
+        # ?revision=N downloads an earlier issued version; the current one needs no parameter.
+        report_data = lem_report.report_data
+        revision = lem_report.revision
+        requested_revision = request.GET.get("revision", "").strip()
+        if requested_revision:
+            try:
+                requested_revision = int(requested_revision)
+            except ValueError:
+                return Response({"error": "revision must be a number"}, status=400)
+            if requested_revision != lem_report.revision:
+                snapshot = lem_report.revisions.filter(revision=requested_revision).first()
+                if not snapshot:
+                    return Response({"error": f"Revision {requested_revision} not found."}, status=404)
+                report_data = snapshot.report_data
+                revision = requested_revision
+
         is_costing = lem_report.lem_number.startswith("CT-")
         try:
             if is_costing:
-                pdf_buffer = generate_envision_costing_pdf(lem_report.report_data)
+                pdf_buffer = generate_envision_costing_pdf(report_data)
             else:
-                pdf_buffer = generate_envision_lem_pdf(lem_report.report_data)
+                pdf_buffer = generate_envision_lem_pdf(report_data)
         except Exception as exc:
             return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
 
-        digits = lem_report.lem_number.split("-", 1)[-1]
+        digits = format_display_number(lem_report.lem_number, revision)
         date_part = str(lem_report.lem_date) if lem_report.lem_date else ""
         prefix_label = "Costing_LEM" if is_costing else "Field_Ticket_LEM"
         return FileResponse(
@@ -745,6 +785,8 @@ class EnvisionLEMSearchView(APIView):
 
         return Response({
             "lem_number":  digits,
+            "revision":    report.revision,
+            "display_number": report.display_number,
             "report_data": report.report_data,
             "created_at":  report.created_at,
             "project":     str(report.project_id) if report.project else None,
@@ -892,6 +934,341 @@ class EnvisionLEMVoidView(APIView):
 
         db_key = f"{self.FTF_PREFIX}{raw}"
         return LEMReport.objects.filter(lem_number=db_key).first()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Field ticket revisions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _find_field_ticket_lem(raw):
+    """FT-/FTF- numbers exactly as given; bare digits default to the FTF- series (same rule as the void
+    endpoint); CT-/LEM- numbers are never revisable and never match."""
+    raw = (raw or "").strip()
+    if raw.startswith("FTF-") or raw.startswith("FT-"):
+        return LEMReport.objects.select_related("project__workspace", "requester").filter(lem_number=raw).first()
+    if raw.startswith("CT-") or raw.startswith("LEM-"):
+        return None
+    return LEMReport.objects.select_related("project__workspace", "requester").filter(
+        lem_number=f"FTF-{raw}"
+    ).first()
+
+
+def _can_view_lem(user, lem):
+    if user.is_superuser or lem.requester_id == user.id:
+        return True
+    workspace = lem.project.workspace if lem.project_id else None
+    return bool(workspace) and WorkspaceMember.objects.filter(
+        user=user, workspace=workspace, role__in=EnvisionFieldTicketDownloadView.ELEVATED_ROLES,
+    ).exists()
+
+
+REVISABLE_PREFIX = "FTF-"
+NOT_REVISABLE_MESSAGE = "Only Field Ticket LEMs can be revised (not Daily LEM or Costing tickets)."
+
+
+def _can_revise_lem(user, lem):
+    """Workspace admins of the ticket's workspace and superusers; Field Ticket LEMs (FTF-) only — never the
+    Daily LEM (FT-), Costing (CT-) or generic (LEM-) series."""
+    if not lem.lem_number.startswith(REVISABLE_PREFIX) or not lem.project_id:
+        return False
+    return has_workspace_role(user, lem.project.workspace_id, ADMIN_ONLY)
+
+
+def _sum_labour_hours(report_data):
+    total = Decimal("0")
+    for row in (report_data or {}).get("labour_rows", []):
+        try:
+            total += Decimal(str(row.get("hours") or 0))
+        except (InvalidOperation, TypeError):
+            pass
+    return total
+
+
+class FieldTicketRevisionEntrySerializer(FieldTicketEntrySerializer):
+    """A payload row of the revise endpoint: `id` set = edit that existing time entry, absent = a new one."""
+    id = serializers.UUIDField(required=False)
+
+
+class EnvisionFieldTicketEntriesView(APIView):
+    """
+    GET /api/reports/envision/lem/entries/?lem_number=FT-000012
+
+    The ticket's current time entries in the shape the Field Ticket form works with, so an admin can open the
+    ticket for revision. Same people as the revise endpoint: workspace admins and superusers.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        lem = _find_field_ticket_lem(request.GET.get("lem_number"))
+        if not lem:
+            return Response({"error": "Field ticket not found."}, status=404)
+        if not lem.lem_number.startswith(REVISABLE_PREFIX):
+            return Response({"error": NOT_REVISABLE_MESSAGE}, status=400)
+        if not _can_revise_lem(request.user, lem):
+            return Response({"error": "Only workspace admins can revise field tickets."}, status=403)
+
+        entries = (
+            lem.time_entries.filter(is_deleted=False)
+            .select_related("user", "job_title")
+            .prefetch_related("asset_usages__asset")
+            .order_by("start_time", "created_at")
+        )
+        rows = []
+        for e in entries:
+            start_local = utc_to_envision_local(e.start_time)
+            end_local = utc_to_envision_local(e.end_time)
+            rows.append({
+                "id": str(e.id),
+                "user": str(e.user_id),
+                "user_name": e.user.get_full_name() or e.user.email,
+                "job_title": str(e.job_title_id) if e.job_title_id else None,
+                "description": e.description or "",
+                "date": start_local.date().isoformat(),
+                "end_date": end_local.date().isoformat(),
+                "start_time": start_local.strftime("%H:%M"),
+                "end_time": end_local.strftime("%H:%M"),
+                "duration_hours": str(round(Decimal(e.duration or 0) / 60, 4).normalize()),
+                "billable": bool(e.billable),
+                "meals": bool(e.meals),
+                "hotels": bool(e.hotels),
+                "assets": [
+                    {
+                        "asset_id": str(u.asset_id),
+                        "name": u.asset.name,
+                        "charge_type": u.asset.charge_type,
+                        "quantity_used": str(u.quantity_used) if u.quantity_used is not None else None,
+                    }
+                    for u in e.asset_usages.all()
+                ],
+            })
+
+        return Response({
+            "lem_number": lem.lem_number,
+            "display_number": lem.display_number,
+            "revision": lem.revision,
+            "project": str(lem.project_id),
+            "project_name": lem.project.name,
+            "task": str(lem.task_id) if lem.task_id else None,
+            "task_name": lem.task.name if lem.task_id else "",
+            "date": str(lem.lem_date) if lem.lem_date else (rows[0]["date"] if rows else None),
+            "entries": rows,
+        })
+
+
+class EnvisionFieldTicketReviseView(APIView):
+    """
+    POST /api/reports/envision/lem/revise/
+
+    Body: {"lem_number": "FT-000012", "entries": [ <row>, ... ]}
+    Each row has the same fields as the create endpoint (fieldTicket_Lem/payload/) plus an optional `id`:
+      - `id` of one of the ticket's current time entries  -> that entry is updated in place
+      - no `id`                                           -> a new time entry is added (e.g. another employee)
+      - a current entry that is not in the list           -> removed from the timesheet and the approvals
+    The ticket's project, task and date can't be changed (void and re-enter for that).
+
+    Everything happens in one transaction: time entries, asset usages, weekly approvals (item moved if the
+    employee/week changed, total_hours recalculated — admins may edit approved/locked entries), the LEM's
+    report_data/PDF, and a new LEMRevision snapshot. The LEM number itself never changes; the revision shows
+    as a suffix — "000012-R01", "000012-R02"... Responds with the new PDF.
+
+    Workspace admins (of the ticket's workspace) and superusers only.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        lem = _find_field_ticket_lem(str(request.data.get("lem_number", "")))
+        if not lem:
+            return Response({"error": "Field ticket not found."}, status=404)
+        if not lem.lem_number.startswith(REVISABLE_PREFIX):
+            return Response({"error": NOT_REVISABLE_MESSAGE}, status=400)
+        if not _can_revise_lem(request.user, lem):
+            return Response({"error": "Only workspace admins can revise field tickets."}, status=403)
+
+        serializer = FieldTicketRevisionEntrySerializer(data=request.data.get("entries"), many=True)
+        serializer.is_valid(raise_exception=True)
+        rows = list(serializer.validated_data)
+        if not rows:
+            return Response(
+                {"error": "At least one entry is required. To remove the whole ticket, delete it instead."},
+                status=400,
+            )
+
+        for row in rows:
+            if row["project"] != lem.project_id or row.get("task") != lem.task_id:
+                return Response({"error": "A revision can't change the ticket's project or task."}, status=400)
+            if lem.lem_date and row["date"] != lem.lem_date:
+                return Response({"error": "A revision can't change the ticket's date."}, status=400)
+        payload_ids = [row["id"] for row in rows if row.get("id")]
+        if len(payload_ids) != len(set(payload_ids)):
+            return Response({"error": "The same time entry appears more than once."}, status=400)
+
+        try:
+            with transaction.atomic():
+                return self._revise(request, lem, rows, payload_ids)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=400)
+        except _PdfFailed as exc:
+            return Response({"error": f"PDF generation failed: {exc}"}, status=500)
+
+    def _revise(self, request, lem, rows, payload_ids):
+        # Lock the ticket so two admins revising at once get R01 and R02, not two R01s.
+        lem = (
+            LEMReport.objects.select_for_update()
+            .select_related("project__client", "project__workspace", "task", "requester")
+            .get(pk=lem.pk)
+        )
+        existing = {
+            e.id: e for e in lem.time_entries.filter(is_deleted=False).select_related("user", "job_title")
+        }
+        if not existing:
+            raise ValueError(
+                "This ticket has no linked time entries (it was issued before entries were tracked), "
+                "so it can't be revised. Delete it and enter it again."
+            )
+        unknown = [str(i) for i in payload_ids if i not in existing]
+        if unknown:
+            raise ValueError("Some entries don't belong to this ticket (it may have been revised in the meantime). Reopen it and try again.")
+
+        # Capture the ticket as it stands the first time it is revised, so the original stays downloadable.
+        if not lem.revisions.exists():
+            original = LEMRevision.objects.create(
+                lem=lem, revision=lem.revision, report_data=lem.report_data,
+                time_entry_ids=[str(i) for i in existing], created_by=lem.requester,
+            )
+            LEMRevision.objects.filter(pk=original.pk).update(created_at=lem.created_at)
+
+        final_ids = []
+        approvals = {}
+        for index, row in enumerate(rows):
+            row = dict(row)
+            entry_id = row.pop("id", None)
+            try:
+                if entry_id:
+                    for approval in update_field_ticket_entry(request, existing[entry_id], row):
+                        approvals[approval.pk] = approval
+                    final_ids.append(entry_id)
+                else:
+                    final_ids.append(create_field_ticket_entry(request, row).id)
+            except ValueError as exc:
+                raise ValueError(f"Entry {index}: {exc}") from exc
+
+        # Entries the admin took off the ticket come off the timesheet too.
+        removed = [e for eid, e in existing.items() if eid not in set(final_ids)]
+        for entry in removed:
+            for usage in entry.asset_usages.all():
+                usage.delete()
+            for item in TimeEntryApprovalItem.objects.filter(time_entry=entry).select_related("approval"):
+                approvals[item.approval_id] = item.approval
+                item.delete()
+            entry.delete()
+        for approval in approvals.values():
+            if TimeEntryApprovalItem.objects.filter(approval=approval).exists():
+                sync_approval_total(approval)
+            else:
+                approval.delete()
+
+        entries = list(
+            TimeEntry.objects.filter(id__in=final_ids)
+            .select_related("user", "job_title")
+            .prefetch_related("asset_usages__asset")
+            .order_by("start_time")
+        )
+        project, task = lem.project, lem.task
+        previous = lem.report_data or {}
+        new_revision = lem.revision + 1
+        date_str = (lem.lem_date or rows[0]["date"]).strftime("%Y-%m-%d")
+        pm_info = project.pm_info or {}
+        labour_rows, equipment_rows, total_cost = _build_field_ticket_labour_and_equipment(entries)
+
+        pdf_data = {
+            "lem_number":       format_display_number(lem.lem_number, new_revision),
+            "lem_date":         date_str,
+            "company_address":  _address_to_lines(project.workspace.address or ""),
+            "project_name":     project.name,
+            "task_name":        task.name if task else "",
+            "job_number":       project.job_code or "",
+            "client":           project.client.name if project.client else "",
+            "pm_name":          pm_info.get("name", ""),
+            "pm_contact":       pm_info.get("email", ""),
+            "pm_phone":         pm_info.get("phone", ""),
+            "labour_rows":      labour_rows,
+            "work_description": _merge_entry_descriptions(entries),
+            "equipment_rows":   equipment_rows,
+            "total_cost":       f"${total_cost:,.2f}",
+            "client_rep":       previous.get("client_rep", ""),
+            "sign":             previous.get("sign", False),
+            "sign_name":        previous.get("sign_name", ""),
+            "sign_date":        previous.get("sign_date", ""),
+        }
+        try:
+            pdf_buffer = generate_envision_lem_pdf(pdf_data)
+        except Exception as exc:
+            raise _PdfFailed(str(exc)) from exc
+
+        lem.report_data = pdf_data
+        lem.revision = new_revision
+        lem.save()
+        lem.time_entries.set(entries)
+        LEMRevision.objects.create(
+            lem=lem, revision=new_revision, report_data=pdf_data,
+            time_entry_ids=[str(e.id) for e in entries], created_by=request.user,
+        )
+
+        response = FileResponse(
+            pdf_buffer,
+            as_attachment=True,
+            filename=f"Envision_LEM_{pdf_data['lem_number']}_{date_str}.pdf",
+            content_type="application/pdf",
+        )
+        response["X-LEM-Display-Number"] = pdf_data["lem_number"]
+        return response
+
+
+class _PdfFailed(Exception):
+    pass
+
+
+class EnvisionFieldTicketHistoryView(APIView):
+    """
+    GET /api/reports/envision/lem/history/?lem_number=FT-000012
+
+    Every issued version of the ticket, newest first (the current one flagged). Download any of them with
+    GET lem/download/?lem_number=...&revision=N. Same visibility as the download endpoint.
+    """
+
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
+
+    def get(self, request):
+        lem = _find_field_ticket_lem(request.GET.get("lem_number"))
+        if not lem:
+            return Response({"error": "Field ticket not found."}, status=404)
+        if not _can_view_lem(request.user, lem):
+            return Response({"error": "You do not have permission to view this field ticket."}, status=403)
+
+        stored = {r.revision: r for r in lem.revisions.select_related("created_by")}
+        versions = []
+        for number in range(lem.revision, -1, -1):
+            snapshot = stored.get(number)
+            is_current = number == lem.revision
+            data = lem.report_data if is_current else (snapshot.report_data if snapshot else {})
+            by = snapshot.created_by if snapshot else lem.requester
+            versions.append({
+                "revision": number,
+                "display_number": format_display_number(lem.lem_number, number),
+                "is_current": is_current,
+                "created_at": snapshot.created_at if snapshot else lem.created_at,
+                "created_by": (by.get_full_name() or by.email) if by else "-",
+                "total_hours": _fmt_money(_sum_labour_hours(data)),
+                "downloadable": is_current or bool(snapshot),
+            })
+        return Response({
+            "lem_number": lem.lem_number,
+            "display_number": lem.display_number,
+            "revision": lem.revision,
+            "versions": versions,
+        })
 
 
 # ─────────────────────────────────────────────────────────────────────────────

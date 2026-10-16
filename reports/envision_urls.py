@@ -6,6 +6,9 @@ from .envision_views import (
     EnvisionFieldTicketDownloadView,
     EnvisionLEMSearchView,
     EnvisionLEMVoidView,
+    EnvisionFieldTicketEntriesView,
+    EnvisionFieldTicketReviseView,
+    EnvisionFieldTicketHistoryView,
     EnvisionCostingLEMView,
     EnvisionCostingLEMExcelView,
 )
@@ -19,6 +22,9 @@ urlpatterns = [
     path("lem/search/",              EnvisionLEMSearchView.as_view(),  name="envision-lem-search"),
     path("lem/list/",                EnvisionFieldTicketListView.as_view(), name="envision-field-ticket-list"),
     path("lem/download/",            EnvisionFieldTicketDownloadView.as_view(), name="envision-field-ticket-download"),
+    path("lem/entries/",             EnvisionFieldTicketEntriesView.as_view(), name="envision-lem-entries"),
+    path("lem/revise/",              EnvisionFieldTicketReviseView.as_view(), name="envision-lem-revise"),
+    path("lem/history/",             EnvisionFieldTicketHistoryView.as_view(), name="envision-lem-history"),
     path("lem/void/",                EnvisionLEMVoidView.as_view(),    name="envision-lem-void"),
     path("payroll/",                 EnvisionTimesheetReportView.as_view(), name="envision-payroll"),
 ]

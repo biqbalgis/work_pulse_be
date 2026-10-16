@@ -29,6 +29,10 @@ class LEMReport(SoftDeleteModel):
         "time_entries.TimeEntry", blank=True, related_name="lem_reports",
     )
 
+    # 0 = the ticket as first issued; incremented each time an admin revises it (see LEMRevision). lem_number
+    # itself never changes — the revision is shown as a suffix, e.g. "000012-R01".
+    revision = models.PositiveIntegerField(default=0)
+
     class Meta:
         unique_together = [['project', 'lem_number']]
         indexes = [
@@ -64,5 +68,35 @@ class LEMReport(SoftDeleteModel):
             self.lem_number = f"LEM-{new_number:03d}"
         super().save(*args, **kwargs)
 
+    @property
+    def display_number(self):
+        """Bare number without the FT-/FTF-/CT- prefix, plus "-R01" style suffix once revised."""
+        return format_display_number(self.lem_number, self.revision)
+
     def __str__(self):
         return self.lem_number
+
+
+def format_display_number(lem_number, revision=0):
+    base = (lem_number or "").split("-", 1)[-1]
+    return f"{base}-R{revision:02d}" if revision else base
+
+
+class LEMRevision(models.Model):
+    """One issued version of a field ticket. Created the first time a ticket is revised (revision 0 = the
+    original, captured from the ticket as it stood) and on every revision after that, so every issued PDF can
+    still be downloaded exactly as it was."""
+
+    lem = models.ForeignKey(LEMReport, on_delete=models.CASCADE, related_name="revisions")
+    revision = models.PositiveIntegerField()
+    report_data = models.JSONField(default=dict)
+    time_entry_ids = models.JSONField(default=list)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [["lem", "revision"]]
+        ordering = ["revision"]
+
+    def __str__(self):
+        return f"{self.lem.lem_number} r{self.revision}"
