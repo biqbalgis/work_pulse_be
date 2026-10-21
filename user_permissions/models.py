@@ -4,6 +4,10 @@ from users.models import User
 from workspaces.models import Workspace
 
 
+# Modules switched on for a user the moment they join a workspace; an admin enables the rest.
+DEFAULT_NEW_MEMBER_PERMISSIONS = {"timesheet": True}
+
+
 class UserPermission(models.Model):
     """
     Stores which sections of the application a user is allowed to see
