@@ -3,20 +3,23 @@ Custom Report builder — Clockify-style summary reports exported as Excel.
 
 The caller picks filters (projects / employees / date range), a time interval
 (daily / weekly / biweekly / monthly), which metrics to show (total / regular /
-overtime) and how rows are grouped (up to two of project / employee / task).
-Nothing here is persisted — the result is a one-off .xlsx, never a LEMReport.
+overtime / double time) and how rows are grouped (up to two of project /
+employee / task). Nothing here is persisted — the result is a one-off .xlsx,
+never a LEMReport.
 
-Regular vs Overtime follows each workspace's overtime policy
-(Workspace.overtime_policy), the same rules approvals/payroll use
-(approvals.utils.calculate_rt_ot_and_cost):
+Regular / Overtime / Double Time follow each workspace's overtime policy
+(Workspace.overtime_policy):
 
   "envision" — an Alberta statutory holiday is 100% OT (and doesn't count toward
                the weekly Regular hours). On every other day the first 8h is
                Regular and anything beyond is OT, and Regular is capped at 44h
                per Sun-Sat week: once a week's Regular hours reach 44, the
                remaining hours that week are OT.
-  "standard" — per day and per project, Regular up to project.default_rt_hours
-               (8h when unset), the rest is OT.
+  "standard" — Stamsh: the costing LEM's table (CostCalculator.get_hours_breakdown),
+               applied per employee, per project and per day: first 8h Regular,
+               8h-12h OT, beyond 12h Double Time; a statutory holiday (Holiday
+               table) is all Double Time; a Sunday after 40+ Mon-Fri hours is
+               all OT.
   none       — every hour is Regular.
 
 For Envision that split is a property of an employee's TOTAL hours that
@@ -46,11 +49,11 @@ from core.utils.envision_time import alberta_stat_holidays, utc_to_envision_loca
 
 ENVISION_DAILY_RT = float(ENVISION_DAILY_RT_CAP)    # 8h Regular per day
 ENVISION_WEEKLY_RT = float(ENVISION_WEEKLY_RT_CAP)  # 44h Regular per Sun-Sat week
-STANDARD_DEFAULT_DAILY_RT = 8.0
 
-METRICS_ORDER = ("total", "regular", "overtime")
-METRIC_LABELS = {"total": "Total", "regular": "Regular", "overtime": "Overtime"}
-METRIC_INDEX = {"total": 0, "regular": 1, "overtime": 2}
+METRICS_ORDER = ("total", "regular", "overtime", "double")
+N_METRICS = len(METRICS_ORDER)
+METRIC_LABELS = {"total": "Total", "regular": "Regular", "overtime": "Overtime", "double": "Double Time"}
+METRIC_INDEX = {"total": 0, "regular": 1, "overtime": 2, "double": 3}
 GROUP_DIMS = ("project", "user", "task")
 GROUP_LABELS = {"project": "Project", "user": "Employee", "task": "Task"}
 INTERVALS = ("daily", "weekly", "biweekly", "monthly")
@@ -151,17 +154,94 @@ def _dim_key(entry, dim):
     return ("(No Task)", "")
 
 
+STAMSH_REGULAR_CAP = 8.0       # first 8h of a day are Regular
+STAMSH_OVERTIME_CAP = 12.0     # 8h-12h are Overtime, beyond 12h is Double Time
+STAMSH_SUNDAY_OT_WEEKDAY_HOURS = 40.0
+
+
+def stamsh_breakdown(total_hours, *, is_holiday, is_sunday, weekday_hours):
+    """Regular / Overtime / Double Time split of one employee's hours on one
+    project for one day: the same table as the costing LEM
+    (reports.cost_calculator.CostCalculator.get_hours_breakdown):
+      - statutory holiday                       -> everything is Double Time
+      - Sunday after 40+ Mon-Fri hours          -> everything is Overtime
+      - otherwise: first 8h Regular, 8h-12h Overtime, beyond 12h Double Time."""
+    total_hours = round(total_hours, 2)
+    if is_holiday:
+        return 0.0, 0.0, total_hours
+    if is_sunday and weekday_hours >= STAMSH_SUNDAY_OT_WEEKDAY_HOURS:
+        return 0.0, total_hours, 0.0
+    if total_hours > STAMSH_OVERTIME_CAP:
+        return STAMSH_REGULAR_CAP, STAMSH_OVERTIME_CAP - STAMSH_REGULAR_CAP, total_hours - STAMSH_OVERTIME_CAP
+    if total_hours > STAMSH_REGULAR_CAP:
+        return STAMSH_REGULAR_CAP, total_hours - STAMSH_REGULAR_CAP, 0.0
+    return total_hours, 0.0, 0.0
+
+
+def _stamsh_allocations(standard_entries, all_entries, policy_by_workspace, date_from, date_to):
+    """{entry id: (regular, overtime, double)} for entries of "standard" (Stamsh) workspaces,
+    for days inside [date_from, date_to].
+
+    Like the costing LEM, the daily table is applied per employee, per project and per day, and
+    the Regular / Overtime / Double Time hours are handed to that day's entries in the order they
+    were worked. The Sunday rule looks at the employee's Mon-Fri hours on ALL projects."""
+    from workspaces.models import Holiday
+
+    weekday_hours = defaultdict(float)  # (user, that week's Monday) -> Mon-Fri hours, every project
+    for entry in all_entries:
+        if (entry.duration or 0) <= 0:
+            continue
+        day = _entry_local_date(entry, policy_by_workspace.get(entry.workspace_id))
+        if day.weekday() <= 4:
+            weekday_hours[(entry.user_id, day - timedelta(days=day.weekday()))] += entry.duration / 60.0
+
+    global_holidays, workspace_holidays = set(), defaultdict(set)
+    for workspace_id, holiday_date in Holiday.objects.filter(
+        date__range=(date_from - timedelta(days=7), date_to)
+    ).values_list("workspace_id", "date"):
+        (global_holidays if workspace_id is None else workspace_holidays[workspace_id]).add(holiday_date)
+
+    groups = defaultdict(list)
+    for entry, day in standard_entries:
+        if date_from <= day <= date_to:
+            groups[(entry.user_id, entry.project_id, day)].append(entry)
+
+    allocations = {}
+    for (user_id, _project_id, day), group in groups.items():
+        group.sort(key=lambda e: (e.start_time, e.created_at, str(e.id)))
+        workspace_id = group[0].workspace_id
+        reg, ot, dt = stamsh_breakdown(
+            sum(e.duration for e in group) / 60.0,
+            is_holiday=day in global_holidays or day in workspace_holidays[workspace_id],
+            is_sunday=day.weekday() == 6,
+            weekday_hours=weekday_hours[(user_id, day - timedelta(days=day.weekday()))],
+        )
+        remaining = [reg, ot, dt]
+        for entry in group:
+            left = entry.duration / 60.0
+            parts = [0.0, 0.0, 0.0]
+            for i in range(3):
+                take = min(left, remaining[i])
+                parts[i] = take
+                remaining[i] -= take
+                left -= take
+            parts[2] += left  # rounding leftovers are never lost
+            allocations[entry.id] = tuple(parts)
+    return allocations
+
+
 def aggregate_hours(entries, date_from, date_to, date_to_bucket, group_by, include_entry,
                     policy_by_workspace=None):
     """
-    entries             — every TimeEntry (all projects) for the relevant employees
-                          across the full Sun-Sat weeks covering the range
-    include_entry       — predicate: does this entry appear in the report (project
-                          filter)? RT/OT is still computed from ALL entries.
-    policy_by_workspace — {workspace_id: overtime_policy}; entries of a workspace
+    entries             - every TimeEntry (all projects) for the relevant employees across the
+                          full Sun-Sat weeks covering the range, plus the week before it
+                          (Stamsh's Sunday rule looks at the preceding Mon-Fri)
+    include_entry       - predicate: does this entry appear in the report (project
+                          filter)? RT/OT/DT is still computed from ALL entries.
+    policy_by_workspace - {workspace_id: overtime_policy}; entries of a workspace
                           follow its policy ("envision" / "standard" / none).
                           Omitted = every entry has no overtime policy.
-    Returns {group_key_tuple: {bucket_idx: [total, regular, overtime]}}.
+    Returns {group_key_tuple: {bucket_idx: [total, regular, overtime, double]}}.
     """
     week_start, week_end = week_range_for(date_from, date_to)
     stat_holidays = alberta_stat_holidays(range(week_start.year, week_end.year + 1))
@@ -177,9 +257,24 @@ def aggregate_hours(entries, date_from, date_to, date_to_bucket, group_by, inclu
     # Chronological, so Regular hours are used up by earlier work and OT lands on later work.
     dated.sort(key=lambda item: (item[0].start_time, str(item[0].user_id), item[0].created_at, str(item[0].id)))
 
+    cells = defaultdict(lambda: defaultdict(lambda: [0.0] * N_METRICS))
+
+    # -- Stamsh ("standard" policy): the 8h / 12h Regular / Overtime / Double Time table --
+    standard = [item for item in dated if policy_by_workspace.get(item[0].workspace_id) == "standard"]
+    allocations = _stamsh_allocations(standard, entries, policy_by_workspace, date_from, date_to)
+    for entry, day in standard:
+        if entry.id not in allocations or not include_entry(entry):
+            continue
+        reg, ot, dt = allocations[entry.id]
+        cell = cells[tuple(_dim_key(entry, dim) for dim in group_by)][date_to_bucket[day]]
+        cell[0] += entry.duration / 60.0
+        cell[1] += reg
+        cell[2] += ot
+        cell[3] += dt
+
+    # -- Envision (8h/day, 44h/week) and workspaces without an overtime policy --
     envision_daily_used = defaultdict(float)   # (user, day)            -> Regular hours used
     envision_weekly_used = defaultdict(float)  # (user, week's Sunday)  -> Regular hours used
-    standard_used = defaultdict(float)         # (user, day, project)   -> Regular hours used
 
     def regular_hours(policy, entry, day, hours):
         """Regular part of `hours` worked now under `policy`; consumes the matching allowances."""
@@ -196,34 +291,21 @@ def aggregate_hours(entries, date_from, date_to, date_to_bucket, group_by, inclu
             envision_daily_used[day_key] += regular
             envision_weekly_used[week_key] += regular
             return regular
-        if policy == "standard":
-            project = entry.project
-            cap = (
-                float(project.default_rt_hours)
-                if project is not None and project.default_rt_hours is not None
-                else STANDARD_DEFAULT_DAILY_RT
-            )
-            std_key = (entry.user_id, day, entry.project_id)
-            regular = min(hours, max(cap - standard_used[std_key], 0.0))
-            standard_used[std_key] += regular
-            return regular
         return hours  # no overtime policy: everything is Regular
 
-    cells = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0, 0.0]))
-
     # Entries of one employee that start at the same moment (e.g. a whole-day field ticket split across
-    # projects) happened concurrently — there's no real order between them, so they share the Regular /
+    # projects) happened concurrently - there's no real order between them, so they share the Regular /
     # OT split in proportion to their hours instead of the first one arbitrarily taking all the Regular.
-    for _key, concurrent in groupby(dated, key=lambda item: (item[0].start_time, item[0].user_id)):
+    other = [item for item in dated if policy_by_workspace.get(item[0].workspace_id) != "standard"]
+    for _key, concurrent in groupby(other, key=lambda item: (item[0].start_time, item[0].user_id)):
         concurrent = list(concurrent)
         day = concurrent[0][1]
 
         subgroups = defaultdict(list)
         for entry, _day in concurrent:
-            policy = policy_by_workspace.get(entry.workspace_id)
-            subgroups[(policy, entry.project_id if policy == "standard" else None)].append(entry)
+            subgroups[policy_by_workspace.get(entry.workspace_id)].append(entry)
 
-        for (policy, _project), group_entries in subgroups.items():
+        for policy, group_entries in subgroups.items():
             group_hours = sum(e.duration for e in group_entries) / 60.0
             group_regular = regular_hours(policy, group_entries[0], day, group_hours)
 
@@ -343,8 +425,8 @@ def generate_custom_report_xlsx(
     # ── Body ──────────────────────────────────────────────────────────────────
     def vector(bucket_map):
         """Per-bucket [t, r, o] list (zeros where empty) + range totals."""
-        per_bucket = [list(bucket_map.get(i, (0.0, 0.0, 0.0))) for i in range(len(buckets))]
-        totals = [sum(b[k] for b in per_bucket) for k in range(3)]
+        per_bucket = [list(bucket_map.get(i, (0.0,) * N_METRICS)) for i in range(len(buckets))]
+        totals = [sum(b[k] for b in per_bucket) for k in range(N_METRICS)]
         return per_bucket, totals
 
     def write_row(r, labels, per_bucket, totals, font, fill):
@@ -361,11 +443,11 @@ def generate_custom_report_xlsx(
 
     def add_into(acc, per_bucket):
         for i, b in enumerate(per_bucket):
-            for k in range(3):
+            for k in range(N_METRICS):
                 acc[i][k] += b[k]
 
     sort_key = lambda key_el: (key_el[0].lower(), key_el[1])  # noqa: E731
-    grand = [[0.0, 0.0, 0.0] for _ in buckets]
+    grand = [[0.0] * N_METRICS for _ in buckets]
     r = first_body_row
 
     if n_group == 1:
@@ -376,29 +458,30 @@ def generate_custom_report_xlsx(
             r += 1
     else:
         for primary in sorted({k[0] for k in cells}, key=sort_key):
-            block = [[0.0, 0.0, 0.0] for _ in buckets]
+            block = [[0.0] * N_METRICS for _ in buckets]
             for key in sorted((k for k in cells if k[0] == primary), key=lambda k: sort_key(k[1])):
                 per_bucket, totals = vector(cells[key])
                 write_row(r, [key[0][0], key[1][0]], per_bucket, totals, NORMAL_FONT, None)
                 add_into(block, per_bucket)
                 r += 1
-            block_totals = [sum(b[k] for b in block) for k in range(3)]
+            block_totals = [sum(b[k] for b in block) for k in range(N_METRICS)]
             write_row(r, ["{} - Total".format(primary[0]), ""], block, block_totals, BOLD_FONT, SUBTOTAL_FILL)
             add_into(grand, block)
             r += 1
 
-    grand_totals = [sum(b[k] for b in grand) for k in range(3)]
+    grand_totals = [sum(b[k] for b in grand) for k in range(N_METRICS)]
     write_row(r, ["GRAND TOTAL"] + [""] * (n_group - 1), grand, grand_totals, GRAND_FONT, GRAND_FILL)
 
     ws.freeze_panes = ws.cell(row=first_body_row, column=n_group + 1)
 
-    if "regular" in metrics or "overtime" in metrics:
+    if set(metrics) & {"regular", "overtime", "double"}:
         _cell(ws, r + 2, 1,
-              "Regular/Overtime follows the workspace's overtime policy. Standard: per employee, per day and per "
-              "project, hours up to the project's daily Regular limit (8h when unset) are Regular and the rest is "
-              "Overtime. Envision: an Alberta statutory holiday is all Overtime; on other days the first 8h is "
-              "Regular and anything beyond is Overtime, and once a Sun-Sat week's Regular hours reach 44 the "
-              "remaining hours are Overtime. A workspace with no overtime policy shows everything as Regular.",
+              "Regular / Overtime / Double Time follow the workspace's overtime policy. Stamsh: per employee, per "
+              "project and per day, the first 8h is Regular, 8h-12h is Overtime and anything beyond 12h is Double "
+              "Time; a statutory holiday is all Double Time; a Sunday after 40+ Mon-Fri hours is all Overtime. "
+              "Envision: an Alberta statutory holiday is all Overtime; on other days the first 8h is Regular and "
+              "anything beyond is Overtime, and once a Sun-Sat week's Regular hours reach 44 the remaining hours "
+              "are Overtime (no Double Time). A workspace with no overtime policy shows everything as Regular.",
               font=NOTE_FONT, align=LEFT)
 
     if include_chart:
@@ -425,20 +508,20 @@ def _add_chart_sheet(wb, cells, buckets, metrics, group_by, chart_type):
         category_header = "Period"
         rows = []
         for i, bucket in enumerate(buckets):
-            totals = [0.0, 0.0, 0.0]
+            totals = [0.0] * N_METRICS
             for bucket_map in cells.values():
                 cell = bucket_map.get(i)
                 if cell:
-                    for k in range(3):
+                    for k in range(N_METRICS):
                         totals[k] += cell[k]
             rows.append((bucket["label"], totals))
         series_metrics = metrics
         series_idx = m_idx
     else:
-        by_primary = defaultdict(lambda: [0.0, 0.0, 0.0])
+        by_primary = defaultdict(lambda: [0.0] * N_METRICS)
         for key, bucket_map in cells.items():
             for cell in bucket_map.values():
-                for k in range(3):
+                for k in range(N_METRICS):
                     by_primary[key[0]][k] += cell[k]
         if chart_type == "pie":
             # A pie holds one series: Total if it was selected, else the first metric chosen.

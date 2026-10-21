@@ -8,7 +8,7 @@ Body:
     date_from     (str, required)   YYYY-MM-DD
     date_to       (str, required)   YYYY-MM-DD
     interval      (str, required)   "daily" | "weekly" | "biweekly" | "monthly"
-    metrics       (list, required)  any of "total" | "regular" | "overtime"
+    metrics       (list, required)  any of "total" | "regular" | "overtime" | "double"
     group_by      (list, required)  1-2 of "project" | "user" | "task"
     project_ids   (list, optional)  empty/omitted = all projects (incl. none)
     user_ids      (list, optional)  empty/omitted = all employees
@@ -189,10 +189,11 @@ class CustomReportView(APIView):
 
         # ── Entries: every project's hours for the relevant employees, over
         # the FULL Sun-Sat weeks covering the range, so Regular/OT is right.
-        # The window is padded by a day each side to cover time-zone offsets;
-        # each entry's own local date decides whether it counts. ────────────
+        # The window starts a week and a day early because Stamsh's Sunday rule counts the
+        # preceding Mon-Fri hours, and ends a day late to cover time-zone offsets; each
+        # entry's own local date decides whether it counts. ───────────────────
         week_start, week_end = week_range_for(date_from, date_to)
-        range_start = datetime.combine(week_start - timedelta(days=1), time.min, tzinfo=dt_timezone.utc)
+        range_start = datetime.combine(week_start - timedelta(days=8), time.min, tzinfo=dt_timezone.utc)
         range_end = datetime.combine(week_end + timedelta(days=2), time.min, tzinfo=dt_timezone.utc)
 
         base = TimeEntry.objects.filter(start_time__gte=range_start, start_time__lt=range_end)
