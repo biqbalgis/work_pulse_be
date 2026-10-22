@@ -19,6 +19,8 @@ from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 from django.db.models import Q, Sum
+from django.db.models.functions import Coalesce, TruncDate
+from django.utils import timezone
 from django.http import FileResponse
 from rest_framework import serializers
 from rest_framework.response import Response
@@ -520,9 +522,9 @@ class EnvisionFieldTicketListView(APIView):
     Query params (all optional except `type`):
         type        (str)   — "FT" | "FTF" | "CT", default "FT"
         search      (str)   — matches lem_number or project name, contains
-        date_from   (str)   — YYYY-MM-DD, filters on created_at date
-        date_to     (str)   — YYYY-MM-DD, filters on created_at date
-        ordering    (str)   — "created_at" | "-created_at" | "lem_number" | "-lem_number"
+        date_from   (str)   — YYYY-MM-DD, filters on the LEM date (created date if a ticket has none)
+        date_to     (str)   — YYYY-MM-DD, filters on the LEM date (created date if a ticket has none)
+        ordering    (str)   — "lem_date" | "-lem_date" | "created_at" | "-created_at" | "lem_number" | "-lem_number"
         page        (int)   — default 1
         page_size   (int)   — default 20, max 100
         workspace   (uuid)  — superuser only, narrows to one workspace
@@ -541,7 +543,7 @@ class EnvisionFieldTicketListView(APIView):
     TYPE_PREFIXES = {"FT": "FT-", "FTF": "FTF-", "CT": "CT-"}
     DEFAULT_PAGE_SIZE = 20
     MAX_PAGE_SIZE = 100
-    ALLOWED_ORDERING = {"created_at", "-created_at", "lem_number", "-lem_number"}
+    ALLOWED_ORDERING = {"lem_date", "-lem_date", "created_at", "-created_at", "lem_number", "-lem_number"}
 
     def get(self, request):
         user = request.user
@@ -552,6 +554,7 @@ class EnvisionFieldTicketListView(APIView):
             LEMReport.objects
             .filter(lem_number__startswith=prefix, project__isnull=False)
             .select_related("project", "project__workspace", "requester")
+            .annotate(effective_date=Coalesce("lem_date", TruncDate("created_at")))
         )
 
         # Workspaces where this user may revise tickets (None = all, for superusers).
@@ -586,14 +589,16 @@ class EnvisionFieldTicketListView(APIView):
         date_from = request.GET.get("date_from")
         date_to = request.GET.get("date_to")
         if date_from:
-            qs = qs.filter(created_at__date__gte=date_from)
+            qs = qs.filter(effective_date__gte=date_from)
         if date_to:
-            qs = qs.filter(created_at__date__lte=date_to)
+            qs = qs.filter(effective_date__lte=date_to)
 
-        ordering = request.GET.get("ordering", "-created_at")
+        ordering = request.GET.get("ordering", "-lem_date")
         if ordering not in self.ALLOWED_ORDERING:
-            ordering = "-created_at"
-        qs = qs.order_by(ordering, "-id")
+            ordering = "-lem_date"
+        # the LEM date, falling back to the created date for any ticket without one
+        order_field = ordering.replace("lem_date", "effective_date")
+        qs = qs.order_by(order_field, "-id")
 
         try:
             page = max(int(request.GET.get("page", 1)), 1)
@@ -618,6 +623,7 @@ class EnvisionFieldTicketListView(APIView):
                 self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
             ),
             "project_name": lem.project.name if lem.project else "-",
+            "lem_date": str(lem.lem_date) if lem.lem_date else timezone.localtime(lem.created_at).date().isoformat(),
             "created_at": lem.created_at,
             "created_by": lem.requester.get_full_name() if lem.requester else "-",
         }
