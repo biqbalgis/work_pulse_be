@@ -77,7 +77,7 @@ class BulkTimeEntrySerializer(serializers.Serializer):
     end_date = serializers.DateField(format="%Y-%m-%d", required=False, allow_null=True)
     user = serializers.UUIDField()
     project = serializers.UUIDField()
-    job_title = serializers.UUIDField()
+    job_title = serializers.UUIDField(required=False, allow_null=True)  # defaults to the workspace's default job title
     task = serializers.UUIDField(required=False, allow_null=True)
     start_time = serializers.TimeField(format="%H:%M")
     end_time = serializers.TimeField(format="%H:%M")
@@ -91,7 +91,7 @@ class FieldTicketEntrySerializer(serializers.Serializer):
     """One time entry row for the field-ticket bulk endpoint."""
     user        = serializers.UUIDField()
     project     = serializers.UUIDField()
-    job_title   = serializers.UUIDField()
+    job_title   = serializers.UUIDField(required=False, allow_null=True)  # defaults to the workspace's default job title
     task        = serializers.UUIDField(required=False, allow_null=True)
     date        = serializers.DateField(format="%Y-%m-%d")
     end_date    = serializers.DateField(format="%Y-%m-%d", required=False, allow_null=True)

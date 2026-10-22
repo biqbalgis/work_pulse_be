@@ -27,7 +27,7 @@ from rest_framework.views import APIView
 from approvals.utils import get_week_bounds
 from core.utils.workspace_utils import get_user_workspace_ids
 from organization_asset.models import AssetUsage
-from projects.models import Project, UserProjectRole
+from projects.models import Project
 from time_entries.models import TimeEntry
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser
@@ -153,10 +153,12 @@ class DashboardSummaryView(APIView):
         })
 
     def _member_summary(self, user, start, end):
+        # Everyone can log time on every active project of their workspace(s) — no assignment needed.
         project_ids = list(
-            UserProjectRole.objects.filter(
-                user=user, is_deleted=False, project__is_active=True, project__is_deleted=False,
-            ).values_list("project_id", flat=True).distinct()
+            Project.objects.filter(
+                is_active=True, is_deleted=False,
+                workspace_id__in=WorkspaceMember.objects.filter(user=user).values("workspace_id"),
+            ).values_list("id", flat=True)
         )
         rows = (
             TimeEntry.objects.filter(

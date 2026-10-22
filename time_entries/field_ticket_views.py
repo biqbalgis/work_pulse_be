@@ -12,6 +12,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Sum
 from rest_framework import permissions, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -20,8 +21,7 @@ from approvals.utils import get_week_bounds
 from core.utils.envision_time import envision_local_to_utc
 from core.utils.logger import log_activity
 from organization_asset.models import AssetUsage, OrganizationAsset
-from projects.models import ProjectRole, UserProjectRole
-from workspaces.models import WorkspaceMember
+from projects.role_utils import labour_cost, resolve_entry_role, resolve_project_workspace
 
 from .models import TimeEntry
 from .serializers import FieldTicketEntrySerializer, resolve_quantity_used
@@ -29,9 +29,11 @@ from .serializers import FieldTicketEntrySerializer, resolve_quantity_used
 User = get_user_model()
 
 
-def _resolve_entry_values(data):
+def _resolve_entry_values(data, existing_entry=None):
     """Validate one payload row and work out everything a TimeEntry needs from it: the target user and
-    workspace, the hourly rate (user-project-role first, then project-role), the UTC start/end and the cost.
+    workspace, the job title and hourly rate (see projects.role_utils), the UTC start/end and the cost.
+    Anyone in the project's workspace can be put on a ticket; no project role is needed. When revising, an
+    entry that already has a job title/rate keeps it unless the payload names a different job title.
     Raises ValueError on anything that can't be saved."""
 
     # 1. Resolve target user
@@ -39,34 +41,21 @@ def _resolve_entry_values(data):
     if not target_user:
         raise ValueError(f"User {data['user']} not found.")
 
-    # 2. Workspace
-    wm = WorkspaceMember.objects.filter(user=target_user).first()
-    if not wm:
-        raise ValueError(f"User {target_user} is not a member of any workspace.")
-    workspace = wm.workspace
+    # 2. Workspace — the project's own; the employee just has to be a member of it
+    project_id = data["project"]
+    try:
+        workspace = resolve_project_workspace(target_user, project_id)
 
-    # 3. Hourly rate — user-project-role first, fallback to project-role
-    project_id  = data["project"]
-    job_title_id = data["job_title"]
-
-    upr = UserProjectRole.objects.filter(
-        user=target_user, project_id=project_id, job_title_id=job_title_id
-    ).first()
-
-    if upr and upr.hourly_rate is not None:
-        hourly_rate = upr.hourly_rate
-    else:
-        project_role = ProjectRole.objects.filter(
-            project_id=project_id, job_title_id=job_title_id
-        ).first()
-        if not project_role:
-            raise ValueError(
-                f"Job title {job_title_id} is not configured for project {project_id}."
-            )
-        hourly_rate = project_role.hourly_rate
-
-    if hourly_rate is None:
-        raise ValueError("Hourly rate not found for this user/project/job-title combination.")
+        # 3. Job title + hourly rate (see projects.role_utils); a revised entry keeps what it already has
+        job_title_id = data.get("job_title") or (existing_entry.job_title_id if existing_entry else None)
+        job_title_id, hourly_rate = resolve_entry_role(
+            target_user, project_id, workspace, job_title_id, include_deleted_assignments=existing_entry is not None
+        )
+    except ValidationError as exc:
+        detail = exc.detail
+        raise ValueError(str(detail[0]) if isinstance(detail, list) else str(detail)) from exc
+    if hourly_rate is None and existing_entry is not None:
+        hourly_rate = existing_entry.hourly_rate
 
     # 4. Build UTC-aware datetimes — Field Ticket times from the frontend
     # are always Mountain Time (Envision GEO), regardless of server TIME_ZONE.
@@ -85,12 +74,13 @@ def _resolve_entry_values(data):
     return {
         "user": target_user,
         "workspace": workspace,
+        "job_title_id": job_title_id,
         "hourly_rate": hourly_rate,
         "start_dt": start_dt,
         "end_dt": end_dt,
         "duration_minutes": int(duration_secs // 60),
         "duration_hours": duration_hours,
-        "cost": duration_hours * Decimal(hourly_rate),
+        "cost": labour_cost(duration_hours, hourly_rate),
     }
 
 
@@ -156,7 +146,7 @@ def create_field_ticket_entry(request, data):
         user=values["user"],
         workspace=values["workspace"],
         project_id=data["project"],
-        job_title_id=data["job_title"],
+        job_title_id=values["job_title_id"],
         task_id=data.get("task"),
         description=data.get("description", ""),
         start_time=values["start_dt"],
@@ -198,13 +188,13 @@ def update_field_ticket_entry(request, time_entry, data):
     Asset usages are replaced by the ones in the payload. Returns the approvals whose totals were touched
     (already synced).
     """
-    values = _resolve_entry_values(data)
+    values = _resolve_entry_values(data, existing_entry=time_entry)
     entry_date = data["date"]
 
     time_entry.user = values["user"]
     time_entry.workspace = values["workspace"]
     time_entry.project_id = data["project"]
-    time_entry.job_title_id = data["job_title"]
+    time_entry.job_title_id = values["job_title_id"]
     time_entry.task_id = data.get("task")
     time_entry.description = data.get("description", "")
     time_entry.start_time = values["start_dt"]

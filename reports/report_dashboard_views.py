@@ -17,6 +17,9 @@ Body (both):
     workspace     (uuid)   superusers: narrow to one workspace
 entries also takes page / page_size.
 
+Amount: what each entry's assets cost (AssetUsage.cost — the "rate" assets chosen on the entry), counted for
+billable entries. Labour hourly rates play no part.
+
 Same access rule as the Custom Report (superusers, or workspace members whose
 "custom_report" permission is on). Days are Mountain-time days (Envision), like
 the other Envision reports. Nothing is stored.
@@ -31,13 +34,15 @@ from collections import defaultdict
 from datetime import timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import DecimalField, Exists, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from approvals.models import TimeEntryApprovalItem
 from clients.models import Client
+from organization_asset.models import AssetUsage
 from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
 from projects.models import Project
 from tasks.models import Task
@@ -126,6 +131,21 @@ def _filtered_entries(request):
     return qs, date_from, date_to, workspace_ids
 
 
+def _with_asset_cost(qs):
+    """Annotate each entry with `asset_cost`: the sum of its (non-deleted) asset usages' cost."""
+    usages = (
+        AssetUsage.objects.filter(time_entry=OuterRef("pk"), is_deleted=False)
+        .order_by()
+        .values("time_entry")
+        .annotate(total=Sum("cost"))
+        .values("total")
+    )
+    return qs.annotate(
+        asset_cost=Coalesce(Subquery(usages, output_field=DecimalField(max_digits=14, decimal_places=2)),
+                            Value(0), output_field=DecimalField(max_digits=14, decimal_places=2))
+    )
+
+
 def _full_name(user):
     return user.get_full_name() or user.email
 
@@ -150,8 +170,8 @@ class ReportDashboardSummaryView(_ReportDashboardBase):
         qs, date_from, date_to, workspace_ids = result
 
         facts = defaultdict(lambda: [0, 0, 0.0])  # key -> [minutes, entries, amount]
-        for start, user_id, project_id, task_id, billable, description, duration, cost in qs.values_list(
-            "start_time", "user_id", "project_id", "task_id", "billable", "description", "duration", "cost"
+        for start, user_id, project_id, task_id, billable, description, duration, cost in _with_asset_cost(qs).values_list(
+            "start_time", "user_id", "project_id", "task_id", "billable", "description", "duration", "asset_cost"
         ).iterator():
             minutes = duration or 0
             if minutes <= 0:
@@ -226,9 +246,9 @@ class ReportDashboardEntriesView(_ReportDashboardBase):
         except (TypeError, ValueError):
             raise _BadRequest("page and page_size must be numbers")
 
-        qs = qs.filter(duration__gt=0).select_related("user", "project", "project__client", "task").order_by(
-            "-start_time", "-created_at"
-        )
+        qs = _with_asset_cost(qs.filter(duration__gt=0)).select_related(
+            "user", "project", "project__client", "task"
+        ).order_by("-start_time", "-created_at")
         count = qs.count()
         offset = (page - 1) * page_size
         results = []
@@ -248,6 +268,6 @@ class ReportDashboardEntriesView(_ReportDashboardBase):
                 "description": e.description or "",
                 "minutes": e.duration,
                 "billable": bool(e.billable),
-                "amount": round(float(e.cost or 0), 2) if e.billable else 0.0,
+                "amount": round(float(e.asset_cost or 0), 2) if e.billable else 0.0,
             })
         return Response({"count": count, "page": page, "page_size": page_size, "results": results})

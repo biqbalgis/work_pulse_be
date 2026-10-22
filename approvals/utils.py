@@ -89,7 +89,7 @@ def _calculate_standard(approval_items, breakdown):
     for key, total_hours in daily_project_hours.items():
         proj_data = project_rates[key]
         project = proj_data["project"]
-        hourly = proj_data["hourly_rate"]
+        hourly = Decimal(proj_data["hourly_rate"] or 0)
         billable = proj_data["billable"]
 
         rt_hours = min(total_hours, Decimal(project.default_rt_hours))

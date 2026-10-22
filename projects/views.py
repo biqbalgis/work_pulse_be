@@ -143,7 +143,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
 class JobTitleViewSet(viewsets.ModelViewSet):
     serializer_class = JobTitleSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    # Project roles are no longer part of the workflow (everyone can log time on every project); kept for data access.
+    permission_classes = [permissions.IsAuthenticated, IsSuperUser]
 
     def paginate_queryset(self, queryset):
         if self.request.query_params.get('pagination') == 'false':
@@ -205,7 +206,8 @@ RATE_WRITE_DENIED = "Only a workspace admin or manager can change roles and rate
 
 class ProjectRoleViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectRoleSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    # Project roles are no longer part of the workflow (everyone can log time on every project); kept for data access.
+    permission_classes = [permissions.IsAuthenticated, IsSuperUser]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['project__name', 'job_title__name']
     ordering_fields = ['project__name', 'job_title__name', 'hourly_rate']
@@ -474,7 +476,8 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
 
 class UserProjectRoleViewSet(viewsets.ModelViewSet):
     serializer_class = UserProjectRoleSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    # Project roles are no longer part of the workflow (everyone can log time on every project); kept for data access.
+    permission_classes = [permissions.IsAuthenticated, IsSuperUser]
     pagination_class = None
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['project__name', 'user__first_name', 'user__last_name', 'job_title__name']
@@ -543,7 +546,8 @@ class UserProjectRoleViewSet(viewsets.ModelViewSet):
 from rest_framework.views import APIView
 
 class CurrentUserProjectRolesView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    # Project roles are no longer part of the workflow (everyone can log time on every project); kept for data access.
+    permission_classes = [permissions.IsAuthenticated, IsSuperUser]
 
     def get(self, request):
         project_id = request.query_params.get("project_id")
@@ -567,7 +571,8 @@ class RoleTemplateViewSet(viewsets.ViewSet):
     GET  /api/role-templates/       — list all templates created by the current user
     DELETE /api/role-templates/{id}/ — soft-delete a template
     """
-    permission_classes = [permissions.IsAuthenticated]
+    # Project roles are no longer part of the workflow (everyone can log time on every project); kept for data access.
+    permission_classes = [permissions.IsAuthenticated, IsSuperUser]
 
     def create(self, request):
         serializer = RoleTemplateCreateSerializer(data=request.data)

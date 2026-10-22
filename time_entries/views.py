@@ -25,8 +25,7 @@ from .serializers import (
     BulkTimeEntryOutputSerializer,
     resolve_quantity_used,
 )
-from projects.models import ProjectRole
-from projects.models import UserProjectRole
+from projects.role_utils import labour_cost, resolve_entry_role, resolve_project_workspace
 from workspaces.models import WorkspaceMember
 from core.utils.logger import log_activity
 from core.utils.workspace_utils import resolve_target_user
@@ -127,21 +126,14 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
         project = serializer.validated_data.get("project")
         job_title = serializer.validated_data.get("job_title")
+        if project is None:
+            raise ValidationError("project is required.")
 
-        upr = UserProjectRole.objects.filter(
-            user=user, project=project, job_title=job_title
-        ).first()
-        if not upr:
-            raise ValidationError("You do not have this job title in this project.")
-        hourly_rate = upr.hourly_rate
-
-        if hourly_rate is None:
-            project_role = ProjectRole.objects.filter(
-                project=project, job_title=job_title
-            ).first()
-            if not project_role:
-                raise ValidationError("This job title is not configured for this project.")
-            hourly_rate = project_role.hourly_rate
+        # Everyone in the project's workspace may log time on it; no assignment or project role is needed.
+        workspace = resolve_project_workspace(user, project.id)
+        job_title_id, hourly_rate = resolve_entry_role(
+            user, project.id, workspace, job_title.id if job_title else None
+        )
 
         start_time = serializer.validated_data["start_time"]
         end_time = serializer.validated_data["end_time"]
@@ -151,9 +143,10 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
         duration_seconds = (end_time - start_time).total_seconds()
         duration_hours = Decimal(duration_seconds / 3600).quantize(Decimal("0.01"))
-        cost = duration_hours * Decimal(hourly_rate)
+        cost = labour_cost(duration_hours, hourly_rate)
 
-        # Save time entry
+        # Save time entry (the default job title is filled in when the form sent none)
+        extra_fields = {} if job_title else {"job_title_id": job_title_id}
         time_entry = serializer.save(
             user=user,
             workspace=workspace,
@@ -161,6 +154,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
             hourly_rate=hourly_rate,
             cost=cost,
             duration=int(duration_seconds // 60),
+            **extra_fields,
         )
 
         # Log activity
@@ -240,36 +234,30 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
             duration_minutes = int(duration_seconds // 60)
             duration_hours_decimal = Decimal(duration_seconds / 3600).quantize(Decimal("0.01"))
 
-        if project and job_title and end_time:
-            # all_objects, not objects: editing an old entry must still resolve the
-            # rate that was actually in effect even if that assignment has since
-            # been soft-deleted (e.g. the user was removed from the project) —
-            # otherwise this would either block the edit or silently substitute a
-            # different rate than the entry's real history.
-            upr = UserProjectRole.all_objects.filter(
-                user=entry.user, project=project, job_title=job_title
-            ).first()
-            if upr and upr.hourly_rate is not None:
-                hourly_rate = upr.hourly_rate
-            else:
-                project_role = ProjectRole.objects.filter(
-                    project=project, job_title=job_title
-                ).first()
-                if not project_role:
-                    raise ValidationError("This job title is not configured for this project.")
-                hourly_rate = project_role.hourly_rate
-
-            if hourly_rate is None:
-                raise ValidationError("Hourly rate not found.")
-
-            cost = duration_hours_decimal * Decimal(hourly_rate)
+        job_title_id = job_title.id if job_title else None
+        if project and end_time:
+            if validated_data.get("project") is not None and validated_data["project"] != entry.project:
+                resolve_project_workspace(entry.user, project.id)  # moving it to another project: same workspace rule
+            # include_deleted_assignments: editing an old entry must still resolve the rate that was actually in
+            # effect even if that assignment has since been soft-deleted. With no rate found anywhere the entry
+            # simply keeps the rate it was recorded with.
+            job_title_id, resolved_rate = resolve_entry_role(
+                entry.user, project.id, entry.workspace, job_title_id, include_deleted_assignments=True
+            )
+            if resolved_rate is not None:
+                hourly_rate = resolved_rate
+            cost = labour_cost(duration_hours_decimal, hourly_rate)
 
         # Save editable fields first, then force derived fields onto the model.
         updated_entry = serializer.save()
         updated_entry.duration = duration_minutes
         updated_entry.hourly_rate = hourly_rate
         updated_entry.cost = cost
-        updated_entry.save(update_fields=["duration", "hourly_rate", "cost"])
+        update_fields = ["duration", "hourly_rate", "cost"]
+        if updated_entry.job_title_id is None and job_title_id is not None:
+            updated_entry.job_title_id = job_title_id
+            update_fields.append("job_title")
+        updated_entry.save(update_fields=update_fields)
 
         # ---- Handle asset update ----
         assets_data = validated_data.get("asset_inputs", None)
@@ -464,27 +452,12 @@ class BulkTimeEntryViewSet(viewsets.ViewSet):
                     raise ValidationError(f"User {target_user} is not a member of any workspace.")
                 workspace = wm.workspace
 
-                # 3. Project & Role Check
+                # 3. Project check — anyone in the project's workspace may log time on it
                 project_id = data['project']
-                job_title_id = data['job_title']
-                
-                upr = UserProjectRole.objects.filter(
-                    user=target_user, project_id=project_id, job_title_id=job_title_id
-                ).first()
-                
-                if upr:
-                    hourly_rate = upr.hourly_rate
-                else:
-                    # Fallback to Project Role
-                    project_role = ProjectRole.objects.filter(
-                        project_id=project_id, job_title_id=job_title_id
-                    ).first()
-                    if not project_role:
-                        raise ValidationError("This job title is not configured for this project.")
-                    hourly_rate = project_role.hourly_rate
-
-                if hourly_rate is None:
-                     raise ValidationError("Hourly rate not found.")
+                workspace = resolve_project_workspace(target_user, project_id)
+                job_title_id, hourly_rate = resolve_entry_role(
+                    target_user, project_id, workspace, data.get('job_title')
+                )
 
                 # 4. Dates & Duration
                 entry_date = data['date'] # date object
@@ -507,7 +480,7 @@ class BulkTimeEntryViewSet(viewsets.ViewSet):
                 
                 duration_seconds = (end_dt - start_dt).total_seconds()
                 duration_hours = Decimal(duration_seconds / 3600).quantize(Decimal("0.01"))
-                cost = duration_hours * Decimal(hourly_rate)
+                cost = labour_cost(duration_hours, hourly_rate)
 
                 # 5. Create Time Entry
                 time_entry = TimeEntry.objects.create(
@@ -733,36 +706,22 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
                 else:
                     project_id = entry.project_id
 
-                if "job_title" in data:
-                    job_title_id = data.get("job_title")
-                else:
-                    job_title_id = entry.job_title_id
+                if not project_id:
+                    raise ValidationError("project is required.")
+                if project_id != entry.project_id:
+                    resolve_project_workspace(entry.user, project_id)
 
-                if not project_id or not job_title_id:
-                    raise ValidationError("project and job_title are required.")
-
-                # all_objects: preserve the historical rate even if this assignment
-                # has since been soft-deleted (see TimeEntryViewSet.perform_update).
-                upr = UserProjectRole.all_objects.filter(
-                    user=entry.user, project_id=project_id, job_title_id=job_title_id
-                ).first()
-
-                if upr:
-                    hourly_rate = upr.hourly_rate
-                else:
-                    project_role = ProjectRole.objects.filter(
-                        project_id=project_id, job_title_id=job_title_id
-                    ).first()
-                    if not project_role:
-                        raise ValidationError("This job title is not configured for this project.")
-                    hourly_rate = project_role.hourly_rate
-
-                if hourly_rate is None:
-                    raise ValidationError("Hourly rate not found.")
+                job_title_id = data.get("job_title") if "job_title" in data else entry.job_title_id
+                # include_deleted_assignments: preserve the historical rate even if an assignment was soft-deleted;
+                # with no rate found anywhere the entry keeps the rate it was recorded with.
+                job_title_id, resolved_rate = resolve_entry_role(
+                    entry.user, project_id, entry.workspace, job_title_id, include_deleted_assignments=True
+                )
+                hourly_rate = resolved_rate if resolved_rate is not None else entry.hourly_rate
 
                 duration_seconds = (end_dt - start_dt).total_seconds()
                 duration_hours = Decimal(duration_seconds / 3600).quantize(Decimal("0.01"))
-                cost = duration_hours * Decimal(hourly_rate)
+                cost = labour_cost(duration_hours, hourly_rate)
 
                 entry.project_id = project_id
                 entry.job_title_id = job_title_id
