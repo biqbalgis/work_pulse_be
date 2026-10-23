@@ -2,6 +2,7 @@ from django.urls import path
 from .views import WeeklyPayrollReport, DailyRTOTReport, DailyDetailView, EmployeePayrollDashboard, DailyWorkReportView, \
     LEMReportGenerationView, LEMDailyReportView, LEMCostingReportView, TimeEntryExcelReportView
 from .custom_report_views import CustomReportOptionsView, CustomReportView
+from .daily_ticket_views import DailyTicketDownloadListView, DailyTicketDownloadView
 from .report_dashboard_views import ReportDashboardEntriesView, ReportDashboardSummaryView
 from .dashboard_views import (
     DashboardSummaryView,
@@ -24,6 +25,8 @@ urlpatterns = [
     path("time-entry-excel/", TimeEntryExcelReportView.as_view(), name="time-entry-excel-report"),
     path("custom/", CustomReportView.as_view(), name="custom-report"),
     path("custom/options/", CustomReportOptionsView.as_view(), name="custom-report-options"),
+    path("daily-ticket/download/", DailyTicketDownloadView.as_view(), name="daily-ticket-download"),
+    path("daily-ticket/downloads/", DailyTicketDownloadListView.as_view(), name="daily-ticket-downloads"),
     path("report-dashboard/summary/", ReportDashboardSummaryView.as_view(), name="report-dashboard-summary"),
     path("report-dashboard/entries/", ReportDashboardEntriesView.as_view(), name="report-dashboard-entries"),
     path("dashboard/summary/", DashboardSummaryView.as_view(), name="dashboard-summary"),

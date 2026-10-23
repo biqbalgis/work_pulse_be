@@ -1,8 +1,11 @@
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import models
+from django.db import IntegrityError, models, transaction
+from django.utils import timezone
 
 from core.models import SoftDeleteModel
+from core.utils.envision_time import ENVISION_TZ
 
 User = get_user_model()
 
@@ -100,3 +103,61 @@ class LEMRevision(models.Model):
 
     def __str__(self):
         return f"{self.lem.lem_number} r{self.revision}"
+
+
+class DailyTicketDownload(models.Model):
+    """One blank Daily Ticket (paper LEM) handed out for filling in by hand in the field. Every download
+    reserves the next ticket number, so each printed ticket is unique and can be traced back to who
+    downloaded it and when."""
+
+    # The printed number is "<yy>-<sequence>": the counter restarts on January 1 (Alberta time), so the
+    # first ticket of 2027 is "27-00001". (year, sequence) is unique, so numbers are never reused.
+    year = models.PositiveSmallIntegerField()
+    sequence = models.PositiveIntegerField()
+    ticket_number = models.CharField(max_length=20, unique=True)
+    workspace = models.ForeignKey(
+        "workspaces.Workspace", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    downloaded_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="daily_ticket_downloads",
+    )
+    downloaded_at = models.DateTimeField(default=timezone.now)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-year", "-sequence"]
+        unique_together = [("year", "sequence")]
+
+    def __str__(self):
+        return self.ticket_number
+
+    @classmethod
+    def issue(cls, user, workspace=None, ip_address=None, on_issued=None):
+        """Reserve the next ticket number for the current year. The unique (year, sequence) constraint
+        settles races between concurrent downloads; the loser simply retries with the following number.
+
+        `on_issued(ticket)` runs inside the same transaction (e.g. building the PDF), so if it fails the
+        number is not used up. Returns (ticket, on_issued's result)."""
+        start = getattr(settings, "DAILY_TICKET_START_NUMBER", 1)
+        for _ in range(5):
+            try:
+                with transaction.atomic():
+                    now = timezone.now()
+                    year = now.astimezone(ENVISION_TZ).year
+                    last = (
+                        cls.objects.select_for_update().filter(year=year).only("sequence").order_by("-sequence").first()
+                    )
+                    sequence = max(last.sequence + 1 if last else start, start)
+                    ticket = cls.objects.create(
+                        year=year,
+                        sequence=sequence,
+                        ticket_number=f"{year % 100:02d}-{sequence:05d}",
+                        workspace=workspace,
+                        downloaded_by=user,
+                        downloaded_at=now,
+                        ip_address=ip_address,
+                    )
+                    return ticket, (on_issued(ticket) if on_issued else None)
+            except IntegrityError:
+                continue
+        raise IntegrityError("Could not reserve a Daily Ticket number, please try again.")

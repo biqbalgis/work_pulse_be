@@ -172,6 +172,10 @@ domain = config('domain', default=None)
 # Base URL of the frontend SPA (a different domain from the backend above), used to build
 # links inside emails (password reset, etc.).
 FRONTEND_URL = config('FRONTEND_URL', default='https://dev.workpulse.ca')
+
+# First number handed out for blank Daily Tickets (paper LEMs) each year; the counter restarts at this
+# number every January 1.
+DAILY_TICKET_START_NUMBER = config('DAILY_TICKET_START_NUMBER', default=1, cast=int)
 PASSWORD_RESET_TIMEOUT_MINUTES = config('PASSWORD_RESET_TIMEOUT_MINUTES', default=60, cast=int)
 
 
@@ -182,7 +186,9 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",  # Vite default port
+    "http://localhost:5174",  # Vite default port
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
     "https://envsys.workpulse.ca",
     "https://envision.workpulse.ca",
 
