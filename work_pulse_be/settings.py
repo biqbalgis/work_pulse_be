@@ -9,7 +9,7 @@ SECRET_KEY = config('SECRET_KEY')
 
 DEBUG = config('DEBUG', default=False, cast=bool)
 # DEBUG = True
-ALLOWED_HOSTS =  config("ALLOWED_HOSTS", default="*").split(",")
+ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*").split(",")
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -86,7 +86,6 @@ DATABASES = {
     }
 }
 
-
 AUTH_USER_MODEL = "users.User"
 
 # Ensure Django uses email for authentication everywhere
@@ -154,10 +153,9 @@ SIMPLE_JWT = {
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-
 # Your Azure AD application keys
-MSGRAPH_CLIENT_ID     = config('MSGRAPH_CLIENT_ID')
-MSGRAPH_TENANT_ID     = config('MSGRAPH_TENANT_ID')
+MSGRAPH_CLIENT_ID = config('MSGRAPH_CLIENT_ID')
+MSGRAPH_TENANT_ID = config('MSGRAPH_TENANT_ID')
 MSGRAPH_CLIENT_SECRET = config('MSGRAPH_CLIENT_SECRET')
 
 EMAIL_BACKEND = "msgraphbackend.MSGraphBackend"
@@ -171,27 +169,19 @@ domain = config('domain', default=None)
 
 # Base URL of the frontend SPA (a different domain from the backend above), used to build
 # links inside emails (password reset, etc.).
-FRONTEND_URL = config('FRONTEND_URL', default='https://dev.workpulse.ca')
+FRONTEND_URL = config('FRONTEND_URL', default='https://boss.workpulse.ca')
 
 # First number handed out for blank Daily Tickets (paper LEMs) each year; the counter restarts at this
 # number every January 1.
 DAILY_TICKET_START_NUMBER = config('DAILY_TICKET_START_NUMBER', default=1, cast=int)
 PASSWORD_RESET_TIMEOUT_MINUTES = config('PASSWORD_RESET_TIMEOUT_MINUTES', default=60, cast=int)
 
-
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",  # Vite default port
-    "http://localhost:5174",  # Vite default port
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:5174",
-    "https://envsys.workpulse.ca",
-    "https://envision.workpulse.ca",
-
+"http://127.0.0.1:8000",
+"http://localhost:5173",
+    "https://boss.workpulse.ca",
+    "https://sysboss.workpulse.ca",
 ]
 
 # Security settings for HTTPS
@@ -199,7 +189,7 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 if domain:
     CSRF_TRUSTED_ORIGINS = [f'https://{domain}']
 else:
-    CSRF_TRUSTED_ORIGINS = ["https://envision.workpulse.ca","https://envsys.workpulse.ca","http://127.0.0.1:8000"]
+    CSRF_TRUSTED_ORIGINS = ["https://sysboss.workpulse.ca", "https://boss.workpulse.ca", "http://127.0.0.1:8000"]
 
 CORS_ALLOW_CREDENTIALS = True
 
@@ -212,7 +202,6 @@ CORS_ALLOW_HEADERS = [  # Set the headers allowed in the requests
     'Cache-Control',
     'Last-Event-ID'
 ]
-
 
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
