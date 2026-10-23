@@ -1,0 +1,10 @@
+# Local-only files that must not end up in the image. The image installs its own packages from
+# requirements.txt and runs collectstatic during the build.
+# .env is deliberately NOT ignored: the build's collectstatic step loads settings, which need it.
+.git
+.venv
+.idea
+**/__pycache__
+**/*.pyc
+staticfiles
+downloaded_reports

@@ -178,8 +178,10 @@ PASSWORD_RESET_TIMEOUT_MINUTES = config('PASSWORD_RESET_TIMEOUT_MINUTES', defaul
 
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
-"http://127.0.0.1:8000",
-"http://localhost:5173",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://localhost:5173",
+    "http://localhost:5174",
     "https://boss.workpulse.ca",
     "https://sysboss.workpulse.ca",
 ]
@@ -189,7 +191,8 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 if domain:
     CSRF_TRUSTED_ORIGINS = [f'https://{domain}']
 else:
-    CSRF_TRUSTED_ORIGINS = ["https://sysboss.workpulse.ca", "https://boss.workpulse.ca", "http://127.0.0.1:8000"]
+    CSRF_TRUSTED_ORIGINS = ["https://sysboss.workpulse.ca", "https://boss.workpulse.ca", "http://127.0.0.1:8000",
+                            "http://localhost:5173", "http://localhost:5174", "http://localhost:8000"]
 
 CORS_ALLOW_CREDENTIALS = True
 

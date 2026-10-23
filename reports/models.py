@@ -106,15 +106,24 @@ class LEMRevision(models.Model):
 
 
 class DailyTicketDownload(models.Model):
-    """One blank Daily Ticket (paper LEM) handed out for filling in by hand in the field. Every download
-    reserves the next ticket number, so each printed ticket is unique and can be traced back to who
-    downloaded it and when."""
+    """One blank paper LEM handed out for filling in by hand in the field. Every download reserves the
+    next ticket number, so each printed ticket is unique and can be traced back to who downloaded it and
+    when."""
 
-    # The printed number is "<yy>-<sequence>": the counter restarts on January 1 (Alberta time), so the
-    # first ticket of 2027 is "27-00001". (year, sequence) is unique, so numbers are never reused.
+    DAILY_TICKET = "daily_ticket"
+    COST_SHEET = "cost_sheet"
+    TEMPLATE_CHOICES = (
+        (DAILY_TICKET, "Daily Ticket (Template 1)"),
+        (COST_SHEET, "Daily Cost Sheet (Template 2)"),
+    )
+
+    # Each template has its own number series. The printed number is "<yy>-<sequence>": the counter
+    # restarts on January 1 (Alberta time), so the first ticket of 2027 is "27-00001".
+    # (template, year, sequence) is unique, so numbers are never reused within a series.
+    template = models.CharField(max_length=20, choices=TEMPLATE_CHOICES, default=DAILY_TICKET)
     year = models.PositiveSmallIntegerField()
     sequence = models.PositiveIntegerField()
-    ticket_number = models.CharField(max_length=20, unique=True)
+    ticket_number = models.CharField(max_length=20)
     workspace = models.ForeignKey(
         "workspaces.Workspace", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
     )
@@ -126,15 +135,16 @@ class DailyTicketDownload(models.Model):
 
     class Meta:
         ordering = ["-year", "-sequence"]
-        unique_together = [("year", "sequence")]
+        unique_together = [("template", "year", "sequence")]
 
     def __str__(self):
         return self.ticket_number
 
     @classmethod
-    def issue(cls, user, workspace=None, ip_address=None, on_issued=None):
-        """Reserve the next ticket number for the current year. The unique (year, sequence) constraint
-        settles races between concurrent downloads; the loser simply retries with the following number.
+    def issue(cls, user, template=DAILY_TICKET, workspace=None, ip_address=None, on_issued=None):
+        """Reserve the next ticket number in this template's series for the current year. The unique
+        (template, year, sequence) constraint settles races between concurrent downloads; the loser
+        simply retries with the following number.
 
         `on_issued(ticket)` runs inside the same transaction (e.g. building the PDF), so if it fails the
         number is not used up. Returns (ticket, on_issued's result)."""
@@ -145,10 +155,15 @@ class DailyTicketDownload(models.Model):
                     now = timezone.now()
                     year = now.astimezone(ENVISION_TZ).year
                     last = (
-                        cls.objects.select_for_update().filter(year=year).only("sequence").order_by("-sequence").first()
+                        cls.objects.select_for_update()
+                        .filter(template=template, year=year)
+                        .only("sequence")
+                        .order_by("-sequence")
+                        .first()
                     )
                     sequence = max(last.sequence + 1 if last else start, start)
                     ticket = cls.objects.create(
+                        template=template,
                         year=year,
                         sequence=sequence,
                         ticket_number=f"{year % 100:02d}-{sequence:05d}",

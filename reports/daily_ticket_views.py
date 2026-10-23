@@ -1,6 +1,7 @@
 """
-Blank Daily Ticket (paper LEM) download.
+Blank paper LEM downloads (template 1: Daily Ticket, template 2: Daily Cost Sheet).
   POST /api/reports/daily-ticket/download/  — reserve the next ticket number and return the blank PDF
+                                              body: {"template": "daily_ticket" | "cost_sheet", "workspace": id}
   GET  /api/reports/daily-ticket/downloads/ — who downloaded which ticket number, and when (admins)
 """
 
@@ -11,8 +12,15 @@ from rest_framework.views import APIView
 
 from core.utils.envision_time import ENVISION_TZ
 from workspaces.models import Workspace, WorkspaceMember
+from .cost_sheet_pdf_utils import generate_cost_sheet_pdf
 from .daily_ticket_pdf_utils import generate_daily_ticket_pdf
 from .models import DailyTicketDownload
+
+# template -> (PDF builder, download file name prefix)
+TEMPLATES = {
+    DailyTicketDownload.DAILY_TICKET: (generate_daily_ticket_pdf, "Daily_Ticket"),
+    DailyTicketDownload.COST_SHEET: (generate_cost_sheet_pdf, "Daily_Cost_Sheet"),
+}
 
 
 def _client_ip(request):
@@ -40,25 +48,28 @@ class DailyTicketDownloadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        template = request.data.get("template") or DailyTicketDownload.DAILY_TICKET
+        if template not in TEMPLATES:
+            return Response({"error": f"Unknown template '{template}'."}, status=400)
+        generate_pdf, file_prefix = TEMPLATES[template]
         workspace = _resolve_workspace(request.user, request.data.get("workspace"))
 
         def build_pdf(ticket):
             local_date = ticket.downloaded_at.astimezone(ENVISION_TZ).date()
-            return generate_daily_ticket_pdf(
-                ticket.ticket_number, f"{local_date:%b} {local_date.day}, {local_date.year}",
-            )
+            return generate_pdf(ticket.ticket_number, f"{local_date:%b} {local_date.day}, {local_date.year}")
 
         # The PDF is built inside the number-reservation transaction, so a failed download never burns a
         # ticket number. Kept to a single transaction (no extra savepoints): every query is a round trip
         # to the database.
         ticket, pdf_buffer = DailyTicketDownload.issue(
-            user=request.user, workspace=workspace, ip_address=_client_ip(request), on_issued=build_pdf,
+            user=request.user, template=template, workspace=workspace, ip_address=_client_ip(request),
+            on_issued=build_pdf,
         )
 
         response = FileResponse(
             pdf_buffer,
             as_attachment=True,
-            filename=f"Daily_Ticket_{ticket.ticket_number}.pdf",
+            filename=f"{file_prefix}_{ticket.ticket_number}.pdf",
             content_type="application/pdf",
         )
         response["X-Daily-Ticket-Number"] = ticket.ticket_number
@@ -72,7 +83,7 @@ class DailyTicketDownloadListView(APIView):
 
     def get(self, request):
         user = request.user
-        qs = DailyTicketDownload.objects.select_related("downloaded_by", "workspace")
+        qs = DailyTicketDownload.objects.select_related("downloaded_by", "workspace").order_by("-downloaded_at")
         if not user.is_superuser:
             admin_workspace_ids = WorkspaceMember.objects.filter(
                 user=user, role="admin", is_active=True,
@@ -81,6 +92,8 @@ class DailyTicketDownloadListView(APIView):
 
         rows = [
             {
+                "template": t.template,
+                "template_name": t.get_template_display(),
                 "ticket_number": t.ticket_number,
                 "downloaded_at": t.downloaded_at,
                 "downloaded_by": t.downloaded_by.get_full_name() or t.downloaded_by.email if t.downloaded_by else "",
