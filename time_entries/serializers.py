@@ -43,18 +43,35 @@ class TimeEntrySerializer(serializers.ModelSerializer):
     # Names for display, so lists (e.g. the Timesheet's "View Activities") don't have to show raw IDs
     task_name = serializers.SerializerMethodField()
     project_name = serializers.SerializerMethodField()
+    # The approver's decision on this entry: "pending" | "approved" | "rejected" (and why / by whom when rejected),
+    # so the employee sees what to fix and resubmit.
+    review = serializers.SerializerMethodField()
 
     class Meta:
         model = TimeEntry
         fields = [
             "id","user","workspace","project","project_name","task","task_name","job_title","description",
             "start_time","end_time","duration","hourly_rate","cost","billable",
-            "meals","hotels","assets","asset_inputs","created_at","created_by"
+            "meals","hotels","assets","asset_inputs","created_at","created_by","is_locked","review"
         ]
         read_only_fields = [
             "id","user","workspace","duration","hourly_rate","cost",
-            "created_at","created_by","assets","task_name","project_name"
+            "created_at","created_by","assets","task_name","project_name","is_locked","review"
         ]
+
+    def get_review(self, obj):
+        items = [item for item in obj.timeentryapprovalitem_set.all() if not item.is_deleted]
+        if not items:
+            return None
+        item = max(items, key=lambda i: i.created_at)
+        by = item.decided_by
+        return {
+            "status": item.status,
+            "reason": item.comments if item.status == "rejected" or item.resubmitted_at else "",
+            "decided_by": (by.get_full_name() or by.email) if by else "",
+            "decided_at": item.decided_at,
+            "resubmitted": bool(item.resubmitted_at),
+        }
 
     def get_task_name(self, obj):
         return obj.task.name if obj.task_id else None

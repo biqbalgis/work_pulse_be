@@ -21,10 +21,26 @@ class TimeEntryApproval(SoftDeleteModel):
 
 
 class TimeEntryApprovalItem(SoftDeleteModel):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = (
+        (STATUS_PENDING, "Pending"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+    )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     approval = models.ForeignKey(TimeEntryApproval, on_delete=models.CASCADE, related_name='items')
     time_entry = models.ForeignKey(TimeEntry, on_delete=models.CASCADE)
+    # False only while the entry is rejected (kept for older code; `status` is the real state).
     approved = models.BooleanField(default=True)
+    # The approver's decision on this one entry. A rejected entry goes back to pending when the employee edits it.
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    # The rejection reason, kept after a resubmission so the reviewer sees what was asked for.
     comments = models.TextField(blank=True)
+    decided_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    decided_at = models.DateTimeField(null=True, blank=True)
+    resubmitted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_items')

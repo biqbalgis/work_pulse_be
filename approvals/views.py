@@ -13,6 +13,7 @@ from .models import TimeEntryApproval, TimeEntryApprovalItem
 from .serializers import TimeEntryApprovalSerializer, TimeEntryApprovalItemSerializer
 from time_entries.models import TimeEntry
 from .utils import can_approve, calculate_rt_ot_and_cost
+from .review import APPROVED, REJECTED, decide_item, refresh_week_status, week_detail
 
 
 class ApprovalPagination(StandardPagination):
@@ -91,6 +92,12 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
             items = list(approval.items.all())  # prefetched by list()
             entries_count = len(items)
         metrics = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
+        # Equipment and rate charges on the week's billable entries.
+        lines_total = round(float(sum(
+            usage.cost or 0
+            for item in items if item.time_entry.is_billable_to_client
+            for usage in item.time_entry.asset_usages.all()
+        )), 2)
 
         return {
             "id": approval.id,
@@ -104,13 +111,19 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
                 "type": "day" if approval.start_date == approval.end_date else "week"
             },
             "entries_count": entries_count,
+            "item_counts": {
+                status: sum(1 for item in items if item.status == status)
+                for status in ("pending", "approved", "rejected")
+            },
             "hours": {
                 "total": metrics["total_hours"],
                 "regular": metrics["rt_hours"],
                 "overtime": metrics["ot_hours"]
             },
             "cost": {
-                "total": metrics["total_cost"]
+                "total": metrics["total_cost"],
+                "lines": lines_total,
+                "grand_total": round(metrics["total_cost"] + lines_total, 2),
             },
             "status": approval.status,
             "can_approve": (
@@ -131,7 +144,12 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         # instead of ~3 queries per approval.
         prefetch_related_objects(
             approvals,
-            Prefetch("items", queryset=TimeEntryApprovalItem.objects.select_related("time_entry__project")),
+            Prefetch(
+                "items",
+                queryset=TimeEntryApprovalItem.objects.filter(is_deleted=False)
+                .select_related("time_entry__project")
+                .prefetch_related("time_entry__asset_usages"),
+            ),
         )
         context = self._approver_context(request.user, approvals)
         data = [self._serialize_approval_summary(approval, request, context) for approval in approvals]
@@ -205,86 +223,86 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
     # ========== APPROVE WEEK ==========
     @action(detail=True, methods=["post"], url_path="approve-week")
     def approve_week(self, request, pk=None):
+        """Approves (and locks) every entry still waiting. Entries rejected one by one stay rejected until the
+        employee resubmits them, so the week is only marked approved once none are left."""
         approval = self.get_object()
 
         if not can_approve(request.user, approval.user, approval.workspace):
             return Response({"error": "You are not authorized to approve this employee's time."}, status=403)
 
-        # Set all items to approved + lock time entries
-        for item in approval.items.all():
-            item.approved = True
-            item.save()
-            e = item.time_entry
-            e.is_locked = True
-            e.save()
+        items = approval.items.filter(is_deleted=False).select_related("time_entry")
+        for item in items:
+            if item.status != REJECTED:
+                decide_item(item, APPROVED, request.user)
+        refresh_week_status(approval, request.user)
 
-        approval.status = "approved"
-        approval.reviewed_by = request.user
-        approval.save()
-
+        rejected = sum(1 for item in items if item.status == REJECTED)
+        if rejected:
+            return Response({"message": f"Week approved except {rejected} rejected "
+                                        f"{'entry' if rejected == 1 else 'entries'} waiting for the employee."})
         return Response({"message": "Week approved successfully."})
 
     # ========== REJECT WEEK ==========
-    @action(detail=True, methods=["post"], url_path="approve-week")
-    def approve_week(self, request, pk=None):
+    @action(detail=True, methods=["post"], url_path="reject-week")
+    def reject_week(self, request, pk=None):
+        """Sends the week back: every entry not yet approved is rejected with the reason and unlocked so the
+        employee can fix and resubmit it."""
         approval = self.get_object()
 
         if not can_approve(request.user, approval.user, approval.workspace):
             return Response({"error": "You are not authorized to approve this employee's time."}, status=403)
+        reason = str(request.data.get("reason") or "").strip()
+        if not reason:
+            return Response({"error": "Give a reason so the employee knows what to fix."}, status=400)
 
-        # Approve & lock all entries
-        for item in approval.items.all():
-            item.approved = True
-            item.save()
-
-            e = item.time_entry
-            e.is_locked = True  # 🔐 Lock the time entry
-            e.save()
-
-        approval.status = "approved"
+        for item in approval.items.filter(is_deleted=False).select_related("time_entry"):
+            if item.status != APPROVED:
+                decide_item(item, REJECTED, request.user, reason)
+        approval.status = "rejected"
+        approval.notes = reason
         approval.reviewed_by = request.user
-        approval.save()
+        approval.save(update_fields=["status", "notes", "reviewed_by"])
 
-        return Response({"message": "Week approved successfully."})
+        return Response({"message": "Week rejected. The employee can fix the entries and resubmit them."})
 
     # ========== APPROVE / REJECT SINGLE ENTRY ==========
+    def _item_for(self, pk, item_id):
+        return (
+            TimeEntryApprovalItem.objects.filter(id=item_id, approval_id=pk, is_deleted=False)
+            .select_related("approval__user", "approval__workspace", "time_entry")
+            .first()
+        )
+
     @action(detail=True, methods=["post"], url_path="items/(?P<item_id>[^/.]+)/approve")
     def approve_entry(self, request, pk=None, item_id=None):
-        item = TimeEntryApprovalItem.objects.get(id=item_id)
+        item = self._item_for(pk, item_id)
+        if not item:
+            return Response({"error": "Entry not found."}, status=404)
         approval = item.approval
 
         if not can_approve(request.user, approval.user, approval.workspace):
             return Response({"error": "Unauthorized"}, status=403)
 
-        if approval.status == "approved":
-            return Response({"error": "This week is already approved."}, status=400)
-
-        item.approved = True
-        item.save()
-
-        e = item.time_entry
-        e.is_locked = True
-        e.save()
-
-        return Response({"message": "Entry approved."})
+        decide_item(item, APPROVED, request.user)
+        refresh_week_status(approval, request.user)
+        return Response({"message": "Entry approved.", "week_status": approval.status})
 
     @action(detail=True, methods=["post"], url_path="items/(?P<item_id>[^/.]+)/reject")
     def reject_entry(self, request, pk=None, item_id=None):
-        item = TimeEntryApprovalItem.objects.get(id=item_id)
+        item = self._item_for(pk, item_id)
+        if not item:
+            return Response({"error": "Entry not found."}, status=404)
         approval = item.approval
 
         if not can_approve(request.user, approval.user, approval.workspace):
             return Response({"error": "Unauthorized"}, status=403)
+        reason = str(request.data.get("reason") or "").strip()
+        if not reason:
+            return Response({"error": "Give a reason so the employee knows what to fix."}, status=400)
 
-        item.approved = False
-        item.comments = request.data.get("reason", "")
-        item.save()
-
-        e = item.time_entry
-        e.is_locked = False
-        e.save()
-
-        return Response({"message": "Entry rejected."})
+        decide_item(item, REJECTED, request.user, reason)
+        refresh_week_status(approval, request.user)
+        return Response({"message": "Entry rejected. The employee can fix it and resubmit.", "week_status": approval.status})
 
     # ========== DETAIL VIEW WITH DAILY BREAKDOWN ==========
     def retrieve(self, request, pk=None):
@@ -332,6 +350,9 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
                 "total_cost": summary["total_cost"]
             },
             "daily_breakdown": formatted_days,
+            **week_detail(approval),
+            "notes": approval.notes,
+            "reviewed_by": approval.reviewed_by.get_full_name() if approval.reviewed_by else "",
             "status": approval.status,
             "can_approve": can_approve(request.user, approval.user, approval.workspace)
         })

@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from rest_framework.views import APIView
-from django.db.models import Sum
+from django.db.models import Prefetch, Sum
 from django.db.models.functions import TruncDate
 from zoneinfo import ZoneInfo
 from collections import defaultdict
@@ -15,6 +15,7 @@ from django.contrib.auth import get_user_model
 
 
 from approvals.models import TimeEntryApprovalItem, TimeEntryApproval
+from approvals.review import resubmit_entry
 from approvals.utils import get_week_bounds
 from reports.models import LEMReport
 from .models import TimeEntry
@@ -79,7 +80,13 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         if getattr(self, "action", None) == "list":
             # the list serializer reads each entry's asset usages and each usage's asset; fetching them in two
             # queries for the whole page replaces one-or-more queries per entry (writes/retrieve are unaffected)
-            queryset = queryset.prefetch_related("asset_usages__asset")
+            queryset = queryset.prefetch_related(
+                "asset_usages__asset",
+                Prefetch(
+                    "timeentryapprovalitem_set",
+                    queryset=TimeEntryApprovalItem.objects.select_related("decided_by"),
+                ),
+            )
         return queryset
 
     def _filter_by_date_range(self, queryset):
@@ -250,6 +257,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
         # Save editable fields first, then force derived fields onto the model.
         updated_entry = serializer.save()
+        resubmit_entry(updated_entry)
         updated_entry.duration = duration_minutes
         updated_entry.hourly_rate = hourly_rate
         updated_entry.cost = cost
@@ -742,6 +750,7 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
                 entry.hourly_rate = hourly_rate
                 entry.cost = cost
                 entry.save()
+                resubmit_entry(entry)
 
                 log_activity(
                     request.user,

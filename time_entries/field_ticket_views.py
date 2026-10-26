@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from approvals.models import TimeEntryApproval, TimeEntryApprovalItem
+from approvals.review import resubmit_entry
 from approvals.utils import get_week_bounds
 from core.utils.envision_time import envision_local_to_utc
 from core.utils.logger import log_activity
@@ -232,9 +233,8 @@ def update_field_ticket_entry(request, time_entry, data):
             and approval.end_date == end_week
         ):
             keep = item
-            if not item.approved:
-                item.approved = True
-                item.save(update_fields=["approved"])
+            if item.status == TimeEntryApprovalItem.STATUS_REJECTED:
+                resubmit_entry(time_entry)
             touched.append(approval)
         else:
             item.delete()
