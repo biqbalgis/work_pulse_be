@@ -18,7 +18,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import Count, Q, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 from django.http import FileResponse
@@ -605,7 +605,7 @@ class EnvisionFieldTicketListView(APIView):
         qs = (
             LEMReport.objects
             .filter(lem_number__startswith=prefix, project__isnull=False)
-            .select_related("project", "project__workspace", "requester")
+            .select_related("project", "project__workspace", "project__client", "requester")
             .annotate(effective_date=Coalesce("lem_date", TruncDate("created_at")))
         )
 
@@ -617,10 +617,8 @@ class EnvisionFieldTicketListView(APIView):
         self._status_workspace_ids = _lem_status_workspace_ids(user)
 
         status = request.GET.get("status", "").strip().lower()
-        if status:
-            if status not in dict(LEMReport.STATUS_CHOICES):
-                return Response({"error": "status must be pending, approved or rejected"}, status=400)
-            qs = qs.filter(status=status)
+        if status and status not in dict(LEMReport.STATUS_CHOICES):
+            return Response({"error": "status must be pending, approved or rejected"}, status=400)
 
         if user.is_superuser:
             workspace_id = request.GET.get("workspace")
@@ -652,6 +650,14 @@ class EnvisionFieldTicketListView(APIView):
         if date_to:
             qs = qs.filter(effective_date__lte=date_to)
 
+        # Counts per status for the status tabs: every other filter applies, the status filter itself doesn't.
+        status_counts = {key: 0 for key in dict(LEMReport.STATUS_CHOICES)}
+        for row in qs.order_by().values("status").annotate(n=Count("id")):
+            status_counts[row["status"]] = row["n"]
+        status_counts["all"] = sum(status_counts.values())
+        if status:
+            qs = qs.filter(status=status)
+
         ordering = request.GET.get("ordering", "-lem_date")
         if ordering not in self.ALLOWED_ORDERING:
             ordering = "-lem_date"
@@ -670,7 +676,7 @@ class EnvisionFieldTicketListView(APIView):
         page_qs = qs[start:start + page_size]
 
         serialize = self._serialize_costing if prefix == "CT-" else self._serialize_field_ticket
-        return Response({"results": [serialize(lem) for lem in page_qs], "count": count})
+        return Response({"results": [serialize(lem) for lem in page_qs], "count": count, "status_counts": status_counts})
 
     def _base_fields(self, lem):
         return {
@@ -691,6 +697,8 @@ class EnvisionFieldTicketListView(APIView):
                 self._status_workspace_ids is None or lem.project.workspace_id in self._status_workspace_ids
             ),
             "project_name": lem.project.name if lem.project else "-",
+            "client_name": lem.project.client.name if lem.project and lem.project.client else "",
+            "non_billable": bool(lem.project and not lem.project.billable),
             "lem_date": str(lem.lem_date) if lem.lem_date else timezone.localtime(lem.created_at).date().isoformat(),
             "created_at": lem.created_at,
             "created_by": lem.requester.get_full_name() if lem.requester else "-",
@@ -722,6 +730,8 @@ class EnvisionFieldTicketListView(APIView):
             **self._base_fields(lem),
             "total_hours": _fmt_money(total_hours),
             "asset_info": asset_info,
+            # The ticket's total as printed: labour + equipment on a BOSS template, equipment only on older tickets.
+            "amount": (data.get("boss") or {}).get("subtotal") or data.get("total_cost") or "",
         }
 
     def _serialize_costing(self, lem):
