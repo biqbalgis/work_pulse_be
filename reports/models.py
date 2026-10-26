@@ -46,6 +46,12 @@ class LEMReport(SoftDeleteModel):
     )
     template = models.CharField(max_length=20, choices=TEMPLATE_CHOICES, default="daily_ticket")
 
+    # Invoicing: set when the ticket's work goes on an invoice to the client (admins mark it). Approved tickets
+    # without an invoice are the "uninvoiced work" on the Expert Report.
+    invoiced_on = models.DateField(null=True, blank=True)
+    invoice_number = models.CharField(max_length=50, blank=True, default="")
+    invoiced_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
     # Approval by the consultant / contractor, recorded by a team member with the LEM approval permission.
     # A new ticket (and every revision of it) is pending; set_status() logs each change in LEMStatusEvent.
     STATUS_PENDING = "pending"

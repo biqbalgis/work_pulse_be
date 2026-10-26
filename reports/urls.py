@@ -4,6 +4,13 @@ from .views import WeeklyPayrollReport, DailyRTOTReport, DailyDetailView, Employ
 from .custom_report_views import CustomReportOptionsView, CustomReportView
 from .daily_ticket_views import DailyTicketDownloadListView, DailyTicketDownloadView
 from .report_dashboard_views import ReportDashboardEntriesView, ReportDashboardSummaryView
+from .expert_views import (
+    ExpertOptionsView,
+    ExpertOverviewView,
+    ExpertPayrollExportView,
+    ExpertPayrollView,
+    ExpertProfitabilityView,
+)
 from .dashboard_views import (
     DashboardSummaryView,
     DashboardHoursByProjectView,
@@ -28,6 +35,11 @@ urlpatterns = [
     path("daily-ticket/download/", DailyTicketDownloadView.as_view(), name="daily-ticket-download"),
     path("daily-ticket/downloads/", DailyTicketDownloadListView.as_view(), name="daily-ticket-downloads"),
     path("report-dashboard/summary/", ReportDashboardSummaryView.as_view(), name="report-dashboard-summary"),
+    path("expert/options/", ExpertOptionsView.as_view(), name="expert-options"),
+    path("expert/overview/", ExpertOverviewView.as_view(), name="expert-overview"),
+    path("expert/profitability/", ExpertProfitabilityView.as_view(), name="expert-profitability"),
+    path("expert/payroll/", ExpertPayrollView.as_view(), name="expert-payroll"),
+    path("expert/payroll/export/", ExpertPayrollExportView.as_view(), name="expert-payroll-export"),
     path("report-dashboard/entries/", ReportDashboardEntriesView.as_view(), name="report-dashboard-entries"),
     path("dashboard/summary/", DashboardSummaryView.as_view(), name="dashboard-summary"),
     path("dashboard/hours-by-project/", DashboardHoursByProjectView.as_view(), name="dashboard-hours-by-project"),

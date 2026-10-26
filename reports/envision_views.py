@@ -643,6 +643,12 @@ class EnvisionFieldTicketListView(APIView):
             else:
                 qs = qs.filter(Q(lem_number__icontains=search) | Q(project__name__icontains=search))
 
+        invoiced = request.GET.get("invoiced", "").strip().lower()
+        if invoiced in ("yes", "true", "1"):
+            qs = qs.filter(invoiced_on__isnull=False)
+        elif invoiced in ("no", "false", "0"):
+            qs = qs.filter(invoiced_on__isnull=True)
+
         date_from = request.GET.get("date_from")
         date_to = request.GET.get("date_to")
         if date_from:
@@ -690,6 +696,12 @@ class EnvisionFieldTicketListView(APIView):
             "can_delete": (
                 self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
             ),
+            # Admins mark approved tickets invoiced (see EnvisionLEMInvoiceView).
+            "can_invoice": (
+                self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
+            ),
+            "invoiced_on": lem.invoiced_on,
+            "invoice_number": lem.invoice_number,
             "template": lem.template or DEFAULT_TEMPLATE,
             "template_label": dict(LEMReport.TEMPLATE_CHOICES)[lem.template or DEFAULT_TEMPLATE],
             **_lem_status_fields(lem),
@@ -1807,3 +1819,58 @@ class EnvisionCostingLEMExcelView(_EnvisionCostingLEMDataMixin, APIView):
             filename=f"Envision_Costing_LEM_{ctx['ct_display']}_{ctx['from_str']}.xlsx",
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+
+class EnvisionLEMInvoiceView(APIView):
+    """
+    POST /api/reports/envision/lem/invoice/
+        {"lem_numbers": ["FTF-000012", ...], "invoice_number": "INV-1043", "invoiced_on": "2026-10-26"}
+        {"lem_numbers": [...], "clear": true}     -- not invoiced after all
+
+    Marks approved field tickets as invoiced to the client (the Expert Report counts approved tickets without an
+    invoice as uninvoiced work). Workspace admins and superusers only. All tickets or none: if any number is unknown,
+    not approved or not the caller's to change, nothing is saved.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        numbers = request.data.get("lem_numbers") or []
+        if isinstance(numbers, str):
+            numbers = [numbers]
+        if not numbers:
+            return Response({"error": "lem_numbers is required."}, status=400)
+        clear = bool(request.data.get("clear"))
+        invoice_number = str(request.data.get("invoice_number") or "").strip()
+        invoiced_on = None
+        if not clear:
+            if not invoice_number:
+                return Response({"error": "Enter the invoice number."}, status=400)
+            raw_date = request.data.get("invoiced_on")
+            try:
+                invoiced_on = datetime.strptime(raw_date, "%Y-%m-%d").date() if raw_date else timezone.localdate()
+            except (TypeError, ValueError):
+                return Response({"error": "invoiced_on must be YYYY-MM-DD."}, status=400)
+
+        lems = []
+        for raw in numbers:
+            lem = _find_field_ticket_lem(str(raw), request.user)
+            if not lem:
+                return Response({"error": f"Field ticket {raw} not found."}, status=404)
+            if not has_workspace_role(request.user, lem.project.workspace_id, ADMIN_ONLY):
+                return Response({"error": "Only workspace admins can mark tickets invoiced."}, status=403)
+            if not clear and lem.status != LEMReport.STATUS_APPROVED:
+                return Response({"error": f"{lem.ticket_number} isn't approved yet, so it can't be invoiced."}, status=400)
+            lems.append(lem)
+
+        with transaction.atomic():
+            for lem in lems:
+                lem.invoiced_on = invoiced_on
+                lem.invoice_number = "" if clear else invoice_number
+                lem.invoiced_by = None if clear else request.user
+                lem.save(update_fields=["invoiced_on", "invoice_number", "invoiced_by"])
+        return Response({
+            "updated": [lem.ticket_number for lem in lems],
+            "invoice_number": "" if clear else invoice_number,
+            "invoiced_on": invoiced_on,
+        })
