@@ -40,6 +40,21 @@ class TimeEntry(SoftDeleteModel):
             self.billable = False
         super().save(*args, **kwargs)
 
+    def field_ticket(self):
+        """The (live) field ticket this time is on, or None."""
+        tickets = [lem for lem in self.lem_reports.all() if not lem.is_deleted]
+        return tickets[0] if tickets else None
+
+    def timesheet_lock_reason(self):
+        """Why this entry can't be changed from the timesheet, or None. Time on a field ticket is changed by an
+        admin revising the ticket; once the ticket is invoiced, not at all."""
+        ticket = self.field_ticket()
+        if ticket is None:
+            return None
+        if ticket.status == "invoiced":
+            return f"This time is on field ticket {ticket.ticket_number}, which is invoiced, so it can't be changed."
+        return f"This time is on field ticket {ticket.ticket_number}. To change it, an admin revises the field ticket."
+
     @property
     def is_billable_to_client(self):
         """Counts toward client costs and invoices: the entry and its project are both billable."""

@@ -33,6 +33,9 @@ class OrganizationAsset(SoftDeleteModel):
     # equipment is picked in the Equipment column and prints with equipment; rates are picked in the Rates
     # column and print in the labour section.
     is_equipment = models.BooleanField(default=True)
+    # What one hour / unit costs the company: the employee's wages for a crew rate (e.g. OPFC), the running cost
+    # for equipment. Rate vs cost is the profitability on the Expert Report. Blank = not known yet.
+    cost_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

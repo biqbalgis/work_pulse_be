@@ -43,26 +43,6 @@ class Workspace(SoftDeleteModel):
         return (self.name or "").strip().lower().startswith("envision")
 
 
-class Crew(SoftDeleteModel):
-    """A field crew (e.g. a foreman and the people who work with them). Reports and payroll filter by crew."""
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='crews')
-    name = models.CharField(max_length=100)
-    foreman = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['name']
-        constraints = [
-            models.UniqueConstraint(
-                fields=['workspace', 'name'], condition=models.Q(is_deleted=False), name='unique_active_crew_name',
-            ),
-        ]
-
-    def __str__(self):
-        return self.name
-
-
 class WorkspaceMember(SoftDeleteModel):
     # Predefined user groups; a member belongs to at most one. Used to filter / split Custom Reports.
     GROUP_CHOICES = (
@@ -85,10 +65,6 @@ class WorkspaceMember(SoftDeleteModel):
     joined_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
     manager = models.ForeignKey(User,on_delete=models.SET_NULL,null=True,blank=True,related_name="team_members")
-    crew = models.ForeignKey(Crew, on_delete=models.SET_NULL, null=True, blank=True, related_name='members')
-    # What this person costs per hour. Blank: the labour rate of the job title they worked as is used.
-    # Admins only (see WorkspaceMemberSerializer); overtime is costed at 1.5x.
-    wage_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_workspacesmembers')
     created_at = models.DateTimeField(auto_now_add=True)
 

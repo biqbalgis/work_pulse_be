@@ -46,18 +46,24 @@ class TimeEntrySerializer(serializers.ModelSerializer):
     # The approver's decision on this entry: "pending" | "approved" | "rejected" (and why / by whom when rejected),
     # so the employee sees what to fix and resubmit.
     review = serializers.SerializerMethodField()
+    # The field ticket this time is on: {"number", "status"}; such time is only changed by revising the ticket.
+    field_ticket = serializers.SerializerMethodField()
 
     class Meta:
         model = TimeEntry
         fields = [
             "id","user","workspace","project","project_name","task","task_name","job_title","description",
             "start_time","end_time","duration","hourly_rate","cost","billable",
-            "meals","hotels","assets","asset_inputs","created_at","created_by","is_locked","review"
+            "meals","hotels","assets","asset_inputs","created_at","created_by","is_locked","review","field_ticket"
         ]
         read_only_fields = [
             "id","user","workspace","duration","hourly_rate","cost",
-            "created_at","created_by","assets","task_name","project_name","is_locked","review"
+            "created_at","created_by","assets","task_name","project_name","is_locked","review","field_ticket"
         ]
+
+    def get_field_ticket(self, obj):
+        ticket = obj.field_ticket()
+        return {"number": ticket.ticket_number, "status": ticket.status} if ticket else None
 
     def get_review(self, obj):
         items = [item for item in obj.timeentryapprovalitem_set.all() if not item.is_deleted]

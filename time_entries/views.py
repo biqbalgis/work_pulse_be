@@ -86,6 +86,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
                     "timeentryapprovalitem_set",
                     queryset=TimeEntryApprovalItem.objects.select_related("decided_by"),
                 ),
+                "lem_reports",
             )
         return queryset
 
@@ -218,6 +219,9 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         entry = self.get_object()
         old_start_time = entry.start_time
 
+        reason = entry.timesheet_lock_reason()
+        if reason:
+            raise ValidationError(reason)
         # ❌ Prevent editing if approved (locked)
         if entry.is_locked:
             raise ValidationError("This time entry is approved and cannot be edited.")
@@ -400,6 +404,9 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         return False
 
     def perform_destroy(self, instance):
+        reason = instance.timesheet_lock_reason()
+        if reason:
+            raise ValidationError(reason)
         employee_full_name = instance.user.get_full_name().strip() or f"{instance.user.first_name} {instance.user.last_name}".strip() or getattr(instance.user, "username", "")
         employee_name = self._normalize_text(employee_full_name)
         job_title = self._normalize_text(instance.job_title.name if instance.job_title else "")
@@ -675,6 +682,9 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
                 if not entry:
                     raise ValidationError(f"Time entry {entry_id} not found.")
 
+                reason = entry.timesheet_lock_reason()
+                if reason:
+                    raise ValidationError(reason)
                 if entry.is_locked:
                     raise ValidationError("This time entry is approved and cannot be edited.")
 

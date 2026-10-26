@@ -1,27 +1,28 @@
 """
 Expert Report: a live overview, cost profitability (admins only) and a payroll export, over one set of filters.
 
-    GET /api/reports/expert/options/          filter choices: crews, jobs, clients, employees
+    GET /api/reports/expert/options/          filter choices: jobs, clients, employees
     GET /api/reports/expert/overview/         tickets in, approvals outstanding, uninvoiced work, overhead
-    GET /api/reports/expert/profitability/    billed (bill rates) vs wage cost (wage rates) by job and employee
+    GET /api/reports/expert/profitability/    rate vs cost of the crew rates and equipment charged, by job / employee / item
     GET /api/reports/expert/payroll/          hours per employee per day, straight time / overtime
     GET /api/reports/expert/payroll/export/   the same as an Excel workbook
 
-Filters (query string): workspace, date_from, date_to (YYYY-MM-DD, Mountain Time days), crew, project, client,
-employee (comma-separated ids), work=billable|non_billable, approved=1 (approved time only).
+Filters (query string): workspace, date_from, date_to (YYYY-MM-DD, Mountain Time days), project, client, employee
+(comma-separated ids), work=billable|non_billable, approved=1 (approved time only).
+
+Money comes from the rate sheet (Rates page). Every rate or equipment item charged on a time entry (AssetUsage) is
+billed at the item's rate (usage.cost) and costs the company the item's cost (OrganizationAsset.cost_rate: the
+employee's wages for a crew rate such as OPFC, the running cost for equipment) times the same quantity. Rate minus
+cost is the margin.
 
 Overtime (no double time): a person's hours over 8 in a day or 44 in a Sunday-Saturday week. It is worked out on
 everything the person logged that week (approved time only when `approved` is set), whichever job it was on, so a
 job filter never moves where overtime starts.
-
-Wage cost: the employee's own wage rate (WorkspaceMember.wage_rate) if set, overtime at 1.5x; otherwise the labour
-rate of the job title they worked as (LaborRate "Day": regular / overtime cost). Billed: the entry's cost at the
-job's bill rate (TimeEntry.cost), billable work only.
 """
 
 import io
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from django.db.models import Q, Sum
@@ -35,17 +36,17 @@ from approvals.models import TimeEntryApproval
 from approvals.utils import get_week_bounds
 from clients.models import Client
 from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
-from projects.models import LaborRate, Project
+from projects.models import Project
 from time_entries.models import TimeEntry
-from workspaces.models import Crew, WorkspaceMember
+from workspaces.models import WorkspaceMember
 from workspaces.permissions import ADMIN_ONLY, MANAGE_ROLES, has_workspace_role
 
 from .models import LEMReport
 
 DAILY_ST_HOURS = Decimal("8")
 WEEKLY_ST_HOURS = Decimal("44")
-OT_MULTIPLIER = Decimal("1.5")
 FIELD_TICKET_PREFIX = "FTF-"
+TICKET_STATUSES = ("approved", "invoiced", "pending", "rejected")
 ZERO = Decimal("0")
 
 
@@ -86,6 +87,21 @@ def _ticket_amount(lem):
         return ZERO
 
 
+def usage_quantity(usage, entry):
+    """Hours or units charged: what was recorded, else the entry's hours for an hourly item."""
+    if usage.quantity_used is not None:
+        return Decimal(usage.quantity_used)
+    if usage.asset.charge_type == "hourly":
+        return Decimal(entry.duration) / 60
+    return ZERO
+
+
+def usage_cost(usage, entry):
+    """What the charge costs the company (cost rate x quantity), or None when the item has no cost yet."""
+    rate = usage.asset.cost_rate
+    return None if rate is None else Decimal(rate) * usage_quantity(usage, entry)
+
+
 class Filters:
     """The report's filters, read once from the query string, and the querysets they narrow."""
 
@@ -105,8 +121,7 @@ class Filters:
             raise ExpertReportError("You do not have access to this report.", 403)
         self.workspace_id = workspace_id
 
-        today = timezone.localdate()
-        week_start, week_end = get_week_bounds(today)
+        week_start, week_end = get_week_bounds(timezone.localdate())
         self.date_from = _parse_day(request.query_params.get("date_from"), week_start)
         self.date_to = _parse_day(request.query_params.get("date_to"), week_end)
         if self.date_to < self.date_from:
@@ -115,26 +130,11 @@ class Filters:
             raise ExpertReportError("Pick a period of a year or less.")
 
         params = request.query_params
-        self.crews = _ids(params.get("crew"))
         self.projects = _ids(params.get("project"))
         self.clients = _ids(params.get("client"))
         self.employees = _ids(params.get("employee"))
         self.work = (params.get("work") or "").strip().lower()
         self.approved_only = (params.get("approved") or "").lower() in ("1", "true", "yes")
-
-    # ── people ───────────────────────────────────────────────────────────
-    def people(self):
-        """User ids the crew / employee filters allow (None = everyone)."""
-        allowed = None
-        if self.crews:
-            allowed = set(
-                WorkspaceMember.objects.filter(workspace_id=self.workspace_id, crew_id__in=self.crews, is_deleted=False)
-                .values_list("user_id", flat=True)
-            )
-        if self.employees:
-            chosen = {str(e) for e in self.employees}
-            allowed = {u for u in allowed if str(u) in chosen} if allowed is not None else set(self.employees)
-        return allowed
 
     # ── time entries ─────────────────────────────────────────────────────
     def _base_entries(self, start, end, people, approved=None):
@@ -143,7 +143,7 @@ class Filters:
         qs = TimeEntry.objects.filter(
             workspace_id=self.workspace_id, is_deleted=False, start_time__gte=lo, start_time__lte=hi,
         )
-        if people is not None:
+        if people:
             qs = qs.filter(user_id__in=people)
         if self.approved_only if approved is None else approved:
             qs = qs.filter(
@@ -154,7 +154,7 @@ class Filters:
     def entries(self, use_work=True, approved=None):
         """Entries in the period matching every filter (the work filter optional; `approved` overrides the
         approved-only filter)."""
-        qs = self._base_entries(self.date_from, self.date_to, self.people(), approved)
+        qs = self._base_entries(self.date_from, self.date_to, self.employees, approved)
         if self.projects:
             qs = qs.filter(project_id__in=self.projects)
         if self.clients:
@@ -163,7 +163,7 @@ class Filters:
             qs = qs.filter(billable=True).filter(Q(project__isnull=True) | Q(project__billable=True))
         elif use_work and self.work == "non_billable":
             qs = qs.filter(Q(billable=False) | Q(project__billable=False))
-        return qs.select_related("user", "project__client", "job_title", "task")
+        return qs.select_related("user", "project__client", "job_title", "task").prefetch_related("asset_usages__asset")
 
     def split(self, entries):
         """{entry id: (straight hours, overtime hours)} for `entries`, counting every hour their people logged
@@ -200,36 +200,9 @@ class Filters:
             qs = qs.filter(project_id__in=self.projects)
         if self.clients:
             qs = qs.filter(project__client_id__in=self.clients)
-        people = self.people()
-        if people is not None:
-            qs = qs.filter(time_entries__user_id__in=people).distinct()
+        if self.employees:
+            qs = qs.filter(time_entries__user_id__in=self.employees).distinct()
         return qs
-
-
-class WageRates:
-    """Wage per hour for an entry: the employee's own rate, else their job title's labour rate."""
-
-    def __init__(self, workspace_id):
-        self.members = {
-            m.user_id: m.wage_rate
-            for m in WorkspaceMember.objects.filter(workspace_id=workspace_id, is_deleted=False).only("user_id", "wage_rate")
-        }
-        self.titles = {
-            rate.job_title_id: (rate.regular_cost, rate.overtime_cost)
-            for rate in LaborRate.objects.filter(job_title__workspace_id=workspace_id, condition="Day", is_deleted=False)
-        }
-
-    def for_entry(self, entry):
-        """(straight rate, overtime rate, source) — source "employee", "job title" or None when unknown."""
-        own = self.members.get(entry.user_id)
-        if own is not None:
-            return Decimal(own), Decimal(own) * OT_MULTIPLIER, "employee"
-        title = self.titles.get(entry.job_title_id)
-        if title and title[0] is not None:
-            regular = Decimal(title[0])
-            overtime = Decimal(title[1]) if title[1] else regular * OT_MULTIPLIER
-            return regular, overtime, "job title"
-        return None, None, None
 
 
 class _ExpertView(APIView):
@@ -254,23 +227,18 @@ class ExpertOptionsView(_ExpertView):
         ws = filters.workspace_id
         members = (
             WorkspaceMember.objects.filter(workspace_id=ws, is_deleted=False, is_active=True)
-            .select_related("user", "crew").order_by("user__first_name", "user__last_name")
+            .select_related("user").order_by("user__first_name", "user__last_name")
         )
         return Response({
             "workspace": str(ws),
             "is_admin": has_workspace_role(request.user, ws, ADMIN_ONLY),
-            "crews": [{"id": str(c.id), "name": c.name} for c in Crew.objects.filter(workspace_id=ws)],
             "projects": [
                 {"id": str(p.id), "name": p.name, "code": p.job_code or "", "client_id": str(p.client_id) if p.client_id else None,
                  "billable": p.billable}
                 for p in Project.objects.filter(workspace_id=ws).order_by("name")
             ],
             "clients": [{"id": str(c.id), "name": c.name} for c in Client.objects.filter(workspace_id=ws).order_by("name")],
-            "employees": [
-                {"id": str(m.user_id), "name": m.user.get_full_name() or m.user.email,
-                 "crew_id": str(m.crew_id) if m.crew_id else None}
-                for m in members
-            ],
+            "employees": [{"id": str(m.user_id), "name": m.user.get_full_name() or m.user.email} for m in members],
         })
 
 
@@ -287,8 +255,9 @@ class ExpertOverviewView(_ExpertView):
         before = tickets.filter(
             lem_date__range=(filters.date_from - timedelta(days=days), filters.date_from - timedelta(days=1))
         ).count()
-        by_day = {filters.date_from + timedelta(days=i): {"approved": 0, "pending": 0, "rejected": 0} for i in range(days)}
-        status_counts = {"approved": 0, "pending": 0, "rejected": 0}
+        empty = {status: 0 for status in TICKET_STATUSES}
+        by_day = {filters.date_from + timedelta(days=i): dict(empty) for i in range(days)}
+        status_counts = dict(empty)
         for row in in_period:
             status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
             if row["lem_date"] in by_day:
@@ -298,9 +267,8 @@ class ExpertOverviewView(_ExpertView):
         approvals = TimeEntryApproval.objects.filter(
             workspace_id=filters.workspace_id, status="submitted", is_deleted=False,
         ).select_related("user")
-        people = filters.people()
-        if people is not None:
-            approvals = approvals.filter(user_id__in=people)
+        if filters.employees:
+            approvals = approvals.filter(user_id__in=filters.employees)
         approvals = approvals.annotate(
             minutes=Sum("items__time_entry__duration", filter=Q(items__is_deleted=False, items__time_entry__is_deleted=False)),
         ).order_by("start_date", "created_at")
@@ -316,10 +284,9 @@ class ExpertOverviewView(_ExpertView):
             for a in approvals
         ]
 
-        # Uninvoiced work: approved tickets up to the end of the period without an invoice (billable jobs only).
+        # Uninvoiced work: approved (not yet invoiced) tickets up to the end of the period, billable jobs only.
         uninvoiced = (
-            tickets.filter(status=LEMReport.STATUS_APPROVED, invoiced_on__isnull=True, lem_date__lte=filters.date_to,
-                           project__billable=True)
+            tickets.filter(status=LEMReport.STATUS_APPROVED, lem_date__lte=filters.date_to, project__billable=True)
             .select_related("project__client")
         )
         by_client = {}
@@ -334,28 +301,23 @@ class ExpertOverviewView(_ExpertView):
                 row["oldest"] = lem.lem_date
         clients = sorted(by_client.values(), key=lambda r: r["amount"], reverse=True)
 
-        # Overhead: non-billable time at wage cost.
-        entries = list(filters.entries(use_work=False))
-        split = filters.split(entries)
-        wages = WageRates(filters.workspace_id)
+        # Overhead: non-billable time, at the cost of the crew rates and equipment charged on it.
         total_hours = ZERO
         overhead = {}
-        for entry in entries:
+        for entry in filters.entries(use_work=False):
             hours = Decimal(entry.duration) / 60
             total_hours += hours
             if entry.is_billable_to_client:
                 continue
-            straight, overtime = split.get(entry.id, (hours, ZERO))
-            rate, ot_rate, _source = wages.for_entry(entry)
             name = entry.project.name if entry.project else "No project"
-            row = overhead.setdefault(name, {"name": name, "hours": ZERO, "cost": ZERO, "people": set(), "missing_wage_hours": ZERO})
+            row = overhead.setdefault(name, {"name": name, "hours": ZERO, "cost": ZERO, "people": set(), "uncosted_hours": ZERO})
             row["hours"] += hours
             row["people"].add(entry.user_id)
-            if rate is None:
-                row["missing_wage_hours"] += hours
-            else:
-                row["cost"] += straight * rate + overtime * ot_rate
-        overhead_rows = sorted(overhead.values(), key=lambda r: r["cost"], reverse=True)
+            costs = [usage_cost(usage, entry) for usage in entry.asset_usages.all()]
+            if not costs or any(cost is None for cost in costs):
+                row["uncosted_hours"] += hours
+            row["cost"] += sum((cost for cost in costs if cost is not None), ZERO)
+        overhead_rows = sorted(overhead.values(), key=lambda r: (r["cost"], r["hours"]), reverse=True)
         overhead_hours = sum((r["hours"] for r in overhead_rows), ZERO)
 
         return Response({
@@ -381,10 +343,10 @@ class ExpertOverviewView(_ExpertView):
                 "hours": _hours(overhead_hours),
                 "cost": _money(sum((r["cost"] for r in overhead_rows), ZERO)),
                 "share_of_hours": _money(overhead_hours / total_hours * 100) if total_hours else 0,
-                "missing_wage_hours": _hours(sum((r["missing_wage_hours"] for r in overhead_rows), ZERO)),
+                "uncosted_hours": _hours(sum((r["uncosted_hours"] for r in overhead_rows), ZERO)),
                 "rows": [
                     {"name": r["name"], "hours": _hours(r["hours"]), "cost": _money(r["cost"]), "people": len(r["people"]),
-                     "missing_wage_hours": _hours(r["missing_wage_hours"])}
+                     "uncosted_hours": _hours(r["uncosted_hours"])}
                     for r in overhead_rows
                 ],
             },
@@ -392,80 +354,100 @@ class ExpertOverviewView(_ExpertView):
 
 
 class ExpertProfitabilityView(_ExpertView):
-    """Billed labour at bill rates against wage cost, by job and by employee. Admins only."""
+    """Rate vs cost of the crew rates and equipment charged on billable work, by job, employee and item. Admins only."""
 
     roles = ADMIN_ONLY
 
     def build(self, request, filters):
-        entries = [e for e in filters.entries(use_work=False) if e.is_billable_to_client]
-        split = filters.split(entries)
-        wages = WageRates(filters.workspace_id)
         jobs = {}
         people = {}
-        missing = defaultdict(lambda: ZERO)
+        items = {}
+        missing_cost = {}
+        totals = {"billed": ZERO, "cost": ZERO, "billed_rates": ZERO, "billed_equipment": ZERO}
+        hours = ZERO
+        unpriced_hours = ZERO
 
         def bucket(store, key, seed):
-            return store.setdefault(key, {**seed, "hours": ZERO, "st": ZERO, "ot": ZERO, "billed": ZERO, "cost": ZERO,
-                                          "titles": defaultdict(lambda: ZERO), "sources": defaultdict(lambda: ZERO)})
+            return store.setdefault(key, {**seed, "billed": ZERO, "cost": ZERO, "quantity": ZERO, "hours": ZERO, "_entries": set()})
 
-        for entry in entries:
-            hours = Decimal(entry.duration) / 60
-            straight, overtime = split.get(entry.id, (hours, ZERO))
-            rate, ot_rate, source = wages.for_entry(entry)
-            billed = Decimal(entry.cost or 0)
-            cost = straight * rate + overtime * ot_rate if rate is not None else ZERO
-            if rate is None:
-                missing[entry.user.get_full_name() or entry.user.email] += hours
+        for entry in filters.entries(use_work=False):
+            if not entry.is_billable_to_client:
+                continue
+            entry_hours = Decimal(entry.duration) / 60
+            hours += entry_hours
+            usages = list(entry.asset_usages.all())
+            if not usages:
+                unpriced_hours += entry_hours
             project = entry.project
-            job = bucket(jobs, project.id if project else None, {
-                "project_id": str(project.id) if project else None,
-                "name": project.name if project else "No project",
-                "code": (project.job_code or "") if project else "",
-                "client": project.client.name if project and project.client else "",
-            })
-            person = bucket(people, entry.user_id, {
-                "user_id": str(entry.user_id), "name": entry.user.get_full_name() or entry.user.email,
-            })
-            for row in (job, person):
-                row["hours"] += hours
-                row["st"] += straight
-                row["ot"] += overtime
-                row["billed"] += billed
-                row["cost"] += cost
-            person["titles"][entry.job_title.name if entry.job_title else ""] += hours
-            person["sources"][(source, rate)] += hours
+            for usage in usages:
+                asset = usage.asset
+                quantity = usage_quantity(usage, entry)
+                billed = Decimal(usage.cost or 0)
+                cost = usage_cost(usage, entry)
+                if cost is None:
+                    missing = missing_cost.setdefault(asset.id, {"name": asset.name, "billed": ZERO})
+                    missing["billed"] += billed
+                    cost = ZERO
+                totals["billed"] += billed
+                totals["cost"] += cost
+                totals["billed_equipment" if asset.is_equipment else "billed_rates"] += billed
+                rows = (
+                    bucket(jobs, project.id if project else None, {
+                        "project_id": str(project.id) if project else None,
+                        "name": project.name if project else "No project",
+                        "code": (project.job_code or "") if project else "",
+                        "client": project.client.name if project and project.client else "",
+                    }),
+                    bucket(people, entry.user_id, {
+                        "user_id": str(entry.user_id), "name": entry.user.get_full_name() or entry.user.email,
+                    }),
+                    bucket(items, asset.id, {
+                        "asset_id": str(asset.id), "name": asset.name,
+                        "kind": "equipment" if asset.is_equipment else "rate",
+                        "unit": "h" if asset.charge_type == "hourly" else "unit",
+                        "rate": _money(asset.hourly_rate if asset.charge_type == "hourly" else asset.quantity_rate),
+                        "cost_rate": _money(asset.cost_rate) if asset.cost_rate is not None else None,
+                    }),
+                )
+                for row in rows:
+                    row["billed"] += billed
+                    row["cost"] += cost
+                    row["quantity"] += quantity
+                    if entry.id not in row["_entries"]:
+                        row["_entries"].add(entry.id)
+                        row["hours"] += entry_hours
 
-        def finish(row, kind):
+        def finish(row, keep_quantity=False):
             margin = row["billed"] - row["cost"]
-            out = {
-                key: value for key, value in row.items() if key not in ("titles", "sources", "hours", "st", "ot", "billed", "cost")
-            }
+            out = {k: v for k, v in row.items() if k not in ("billed", "cost", "quantity", "hours", "_entries")}
             out.update({
-                "hours": _hours(row["hours"]), "st_hours": _hours(row["st"]), "ot_hours": _hours(row["ot"]),
-                "billed": _money(row["billed"]), "wage_cost": _money(row["cost"]), "margin": _money(margin),
-                "margin_pct": _money(margin / row["billed"] * 100) if row["billed"] else None,
-                "bill_rate": _money(row["billed"] / row["hours"]) if row["hours"] else None,
+                "hours": _hours(row["hours"]), "billed": _money(row["billed"]), "cost": _money(row["cost"]),
+                "margin": _money(margin), "margin_pct": _money(margin / row["billed"] * 100) if row["billed"] else None,
             })
-            if kind == "person":
-                out["job_title"] = max(row["titles"].items(), key=lambda kv: kv[1])[0] if row["titles"] else ""
-                (source, rate), _h = max(row["sources"].items(), key=lambda kv: kv[1]) if row["sources"] else ((None, None), 0)
-                out["wage_rate"] = _money(rate) if rate is not None else None
-                out["wage_source"] = source
+            if keep_quantity:
+                out["quantity"] = _hours(row["quantity"])
             return out
 
-        totals = {key: sum((row[key] for row in jobs.values()), ZERO) for key in ("hours", "st", "ot", "billed", "cost")}
         margin = totals["billed"] - totals["cost"]
         return Response({
             "period": {"date_from": filters.date_from, "date_to": filters.date_to},
             "summary": {
-                "hours": _hours(totals["hours"]), "st_hours": _hours(totals["st"]), "ot_hours": _hours(totals["ot"]),
-                "billed": _money(totals["billed"]), "wage_cost": _money(totals["cost"]), "margin": _money(margin),
+                "hours": _hours(hours),
+                "billed": _money(totals["billed"]),
+                "billed_rates": _money(totals["billed_rates"]),
+                "billed_equipment": _money(totals["billed_equipment"]),
+                "cost": _money(totals["cost"]),
+                "margin": _money(margin),
                 "margin_pct": _money(margin / totals["billed"] * 100) if totals["billed"] else None,
-                "bill_rate": _money(totals["billed"] / totals["hours"]) if totals["hours"] else None,
-                "missing_wage": [{"name": name, "hours": _hours(h)} for name, h in sorted(missing.items())],
+                "unpriced_hours": _hours(unpriced_hours),
+                "missing_cost": sorted(
+                    ({"name": m["name"], "billed": _money(m["billed"])} for m in missing_cost.values()),
+                    key=lambda m: m["billed"], reverse=True,
+                ),
             },
-            "by_job": sorted((finish(r, "job") for r in jobs.values()), key=lambda r: r["billed"], reverse=True),
-            "by_employee": sorted((finish(r, "person") for r in people.values()), key=lambda r: r["billed"], reverse=True),
+            "by_job": sorted((finish(r) for r in jobs.values()), key=lambda r: r["billed"], reverse=True),
+            "by_employee": sorted((finish(r) for r in people.values()), key=lambda r: r["billed"], reverse=True),
+            "by_item": sorted((finish(r, keep_quantity=True) for r in items.values()), key=lambda r: r["billed"], reverse=True),
         })
 
 
@@ -473,21 +455,15 @@ def payroll_data(filters):
     """Rows of hours per employee per day for the period, straight time / overtime."""
     entries = list(filters.entries(use_work=False))
     split = filters.split(entries)
-    members = {
-        m.user_id: m
-        for m in WorkspaceMember.objects.filter(workspace_id=filters.workspace_id, is_deleted=False).select_related("crew")
-    }
     days = [filters.date_from + timedelta(days=i) for i in range((filters.date_to - filters.date_from).days + 1)]
     rows = {}
     for entry in entries:
         hours = Decimal(entry.duration) / 60
         straight, overtime = split.get(entry.id, (hours, ZERO))
         day = utc_to_envision_local(entry.start_time).date()
-        member = members.get(entry.user_id)
         row = rows.setdefault(entry.user_id, {
             "user_id": str(entry.user_id),
             "name": entry.user.get_full_name() or entry.user.email,
-            "crew": member.crew.name if member and member.crew_id and member.crew else "",
             "titles": defaultdict(lambda: ZERO),
             "days": defaultdict(lambda: {"st": ZERO, "ot": ZERO, "jobs": set()}),
         })
@@ -499,13 +475,12 @@ def payroll_data(filters):
         row["titles"][entry.job_title.name if entry.job_title else ""] += hours
 
     out = []
-    for row in sorted(rows.values(), key=lambda r: (r["crew"] or "~", r["name"])):
+    for row in sorted(rows.values(), key=lambda r: r["name"]):
         st = sum((c["st"] for c in row["days"].values()), ZERO)
         ot = sum((c["ot"] for c in row["days"].values()), ZERO)
         out.append({
             "user_id": row["user_id"],
             "name": row["name"],
-            "crew": row["crew"],
             "job_title": max(row["titles"].items(), key=lambda kv: kv[1])[0] if row["titles"] else "",
             "days": [
                 {"date": day, "st": _hours(row["days"][day]["st"]), "ot": _hours(row["days"][day]["ot"]),
@@ -553,23 +528,23 @@ class ExpertPayrollExportView(_ExpertView):
         book = Workbook()
         daily = book.active
         daily.title = "Daily hours"
-        daily.append(["Employee", "Crew", "Job title", "Date", "Jobs", "Straight time", "Overtime", "Total"])
+        daily.append(["Employee", "Job title", "Date", "Jobs", "Straight time", "Overtime", "Total"])
         for row in data["rows"]:
             for day in row["days"]:
                 if day["st"] or day["ot"]:
-                    daily.append([row["name"], row["crew"], row["job_title"], day["date"], ", ".join(day["jobs"]),
+                    daily.append([row["name"], row["job_title"], day["date"], ", ".join(day["jobs"]),
                                   day["st"], day["ot"], round(day["st"] + day["ot"], 2)])
         totals = book.create_sheet("Totals")
-        totals.append(["Employee", "Crew", "Job title", "Straight time", "Overtime", "Total"])
+        totals.append(["Employee", "Job title", "Straight time", "Overtime", "Total"])
         for row in data["rows"]:
-            totals.append([row["name"], row["crew"], row["job_title"], row["st_hours"], row["ot_hours"], row["total_hours"]])
-        totals.append(["All employees", "", "", data["totals"]["st_hours"], data["totals"]["ot_hours"], data["totals"]["total_hours"]])
+            totals.append([row["name"], row["job_title"], row["st_hours"], row["ot_hours"], row["total_hours"]])
+        totals.append(["All employees", "", data["totals"]["st_hours"], data["totals"]["ot_hours"], data["totals"]["total_hours"]])
         for sheet in (daily, totals):
             for cell in sheet[1]:
                 cell.font = Font(bold=True)
             for column in sheet.columns:
                 sheet.column_dimensions[column[0].column_letter].width = max(12, min(40, max(len(str(c.value or "")) for c in column) + 2))
-        for cell in daily["D"][1:]:
+        for cell in daily["C"][1:]:
             cell.number_format = "yyyy-mm-dd"
 
         buffer = io.BytesIO()

@@ -57,10 +57,13 @@ class LEMReport(SoftDeleteModel):
     STATUS_PENDING = "pending"
     STATUS_APPROVED = "approved"
     STATUS_REJECTED = "rejected"
+    # Invoiced: the approved ticket is on an invoice to the client. Final: the ticket and its time are locked.
+    STATUS_INVOICED = "invoiced"
     STATUS_CHOICES = (
         (STATUS_PENDING, "Pending"),
         (STATUS_APPROVED, "Approved"),
         (STATUS_REJECTED, "Rejected"),
+        (STATUS_INVOICED, "Invoiced"),
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
     status_note = models.TextField(blank=True, default="")

@@ -643,12 +643,6 @@ class EnvisionFieldTicketListView(APIView):
             else:
                 qs = qs.filter(Q(lem_number__icontains=search) | Q(project__name__icontains=search))
 
-        invoiced = request.GET.get("invoiced", "").strip().lower()
-        if invoiced in ("yes", "true", "1"):
-            qs = qs.filter(invoiced_on__isnull=False)
-        elif invoiced in ("no", "false", "0"):
-            qs = qs.filter(invoiced_on__isnull=True)
-
         date_from = request.GET.get("date_from")
         date_to = request.GET.get("date_to")
         if date_from:
@@ -685,27 +679,24 @@ class EnvisionFieldTicketListView(APIView):
         return Response({"results": [serialize(lem) for lem in page_qs], "count": count, "status_counts": status_counts})
 
     def _base_fields(self, lem):
+        locked = lem.status == LEMReport.STATUS_INVOICED
+        is_admin = self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
         return {
             "id": lem.id,
             "lem_number": lem.lem_number,
             "revision": lem.revision,
             "display_number": lem.ticket_number,
-            "can_revise": lem.lem_number.startswith(REVISABLE_PREFIX) and (
-                self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
-            ),
-            "can_delete": (
-                self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
-            ),
-            # Admins mark approved tickets invoiced (see EnvisionLEMInvoiceView).
-            "can_invoice": (
-                self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
-            ),
+            "can_revise": not locked and lem.lem_number.startswith(REVISABLE_PREFIX) and is_admin,
+            "can_delete": not locked and is_admin,
+            # Admins mark approved tickets invoiced (see EnvisionLEMInvoiceView); invoicing locks the ticket.
+            "can_invoice": is_admin and lem.status == LEMReport.STATUS_APPROVED,
+            "locked": locked,
             "invoiced_on": lem.invoiced_on,
             "invoice_number": lem.invoice_number,
             "template": lem.template or DEFAULT_TEMPLATE,
             "template_label": dict(LEMReport.TEMPLATE_CHOICES)[lem.template or DEFAULT_TEMPLATE],
             **_lem_status_fields(lem),
-            "can_change_status": bool(lem.project_id) and (
+            "can_change_status": not locked and bool(lem.project_id) and (
                 self._status_workspace_ids is None or lem.project.workspace_id in self._status_workspace_ids
             ),
             "project_name": lem.project.name if lem.project else "-",
@@ -939,6 +930,8 @@ class EnvisionLEMVoidView(APIView):
         lem_report = self._find_lem(raw, request.user)
         if not lem_report:
             return Response({"error": f"No LEM found for number '{raw}'"}, status=404)
+        if lem_report.status == LEMReport.STATUS_INVOICED:
+            return Response({"error": INVOICED_LOCKED_MESSAGE}, status=400)
 
         if not lem_report.project_id:
             return Response(
@@ -1120,6 +1113,8 @@ class EnvisionLEMStatusView(APIView):
             return Response({"error": "Field ticket not found."}, status=404)
         if not _can_change_lem_status(request.user, lem):
             return Response({"error": "You do not have permission to approve or reject field tickets."}, status=403)
+        if lem.status == LEMReport.STATUS_INVOICED:
+            return Response({"error": INVOICED_LOCKED_MESSAGE}, status=400)
 
         status = str(request.data.get("status", "")).strip().lower()
         if status not in self.SETTABLE:
@@ -1133,6 +1128,7 @@ class EnvisionLEMStatusView(APIView):
 
 
 REVISABLE_PREFIX = "FTF-"
+INVOICED_LOCKED_MESSAGE = "This field ticket is invoiced, so it is locked and can't be changed."
 NOT_REVISABLE_MESSAGE = "Only Field Ticket LEMs can be revised (not Daily LEM or Costing tickets)."
 
 
@@ -1175,6 +1171,8 @@ class EnvisionFieldTicketEntriesView(APIView):
             return Response({"error": "Field ticket not found."}, status=404)
         if not lem.lem_number.startswith(REVISABLE_PREFIX):
             return Response({"error": NOT_REVISABLE_MESSAGE}, status=400)
+        if lem.status == LEMReport.STATUS_INVOICED:
+            return Response({"error": INVOICED_LOCKED_MESSAGE}, status=400)
         if not _can_revise_lem(request.user, lem):
             return Response({"error": "Only workspace admins can revise field tickets."}, status=403)
 
@@ -1254,6 +1252,8 @@ class EnvisionFieldTicketReviseView(APIView):
             return Response({"error": "Field ticket not found."}, status=404)
         if not lem.lem_number.startswith(REVISABLE_PREFIX):
             return Response({"error": NOT_REVISABLE_MESSAGE}, status=400)
+        if lem.status == LEMReport.STATUS_INVOICED:
+            return Response({"error": INVOICED_LOCKED_MESSAGE}, status=400)
         if not _can_revise_lem(request.user, lem):
             return Response({"error": "Only workspace admins can revise field tickets."}, status=403)
         invalid = _invalid_template_response(request.data.get("template"))
@@ -1825,11 +1825,11 @@ class EnvisionLEMInvoiceView(APIView):
     """
     POST /api/reports/envision/lem/invoice/
         {"lem_numbers": ["FTF-000012", ...], "invoice_number": "INV-1043", "invoiced_on": "2026-10-26"}
-        {"lem_numbers": [...], "clear": true}     -- not invoiced after all
 
-    Marks approved field tickets as invoiced to the client (the Expert Report counts approved tickets without an
-    invoice as uninvoiced work). Workspace admins and superusers only. All tickets or none: if any number is unknown,
-    not approved or not the caller's to change, nothing is saved.
+    Marks approved field tickets Invoiced: the status after Approved, recorded in the ticket's history. Invoicing is
+    final: the ticket can't be revised, re-approved, rejected or deleted any more, and its time entries are locked
+    (no edits anywhere). Workspace admins and superusers only. All tickets or none: if any number is unknown, not
+    approved or not the caller's to change, nothing is saved.
     """
 
     permission_classes = [IsAuthenticated]
@@ -1840,17 +1840,16 @@ class EnvisionLEMInvoiceView(APIView):
             numbers = [numbers]
         if not numbers:
             return Response({"error": "lem_numbers is required."}, status=400)
-        clear = bool(request.data.get("clear"))
+        if request.data.get("clear"):
+            return Response({"error": INVOICED_LOCKED_MESSAGE}, status=400)
         invoice_number = str(request.data.get("invoice_number") or "").strip()
-        invoiced_on = None
-        if not clear:
-            if not invoice_number:
-                return Response({"error": "Enter the invoice number."}, status=400)
-            raw_date = request.data.get("invoiced_on")
-            try:
-                invoiced_on = datetime.strptime(raw_date, "%Y-%m-%d").date() if raw_date else timezone.localdate()
-            except (TypeError, ValueError):
-                return Response({"error": "invoiced_on must be YYYY-MM-DD."}, status=400)
+        if not invoice_number:
+            return Response({"error": "Enter the invoice number."}, status=400)
+        raw_date = request.data.get("invoiced_on")
+        try:
+            invoiced_on = datetime.strptime(raw_date, "%Y-%m-%d").date() if raw_date else timezone.localdate()
+        except (TypeError, ValueError):
+            return Response({"error": "invoiced_on must be YYYY-MM-DD."}, status=400)
 
         lems = []
         for raw in numbers:
@@ -1859,18 +1858,22 @@ class EnvisionLEMInvoiceView(APIView):
                 return Response({"error": f"Field ticket {raw} not found."}, status=404)
             if not has_workspace_role(request.user, lem.project.workspace_id, ADMIN_ONLY):
                 return Response({"error": "Only workspace admins can mark tickets invoiced."}, status=403)
-            if not clear and lem.status != LEMReport.STATUS_APPROVED:
+            if lem.status == LEMReport.STATUS_INVOICED:
+                return Response({"error": f"{lem.ticket_number} is already invoiced."}, status=400)
+            if lem.status != LEMReport.STATUS_APPROVED:
                 return Response({"error": f"{lem.ticket_number} isn't approved yet, so it can't be invoiced."}, status=400)
             lems.append(lem)
 
         with transaction.atomic():
             for lem in lems:
                 lem.invoiced_on = invoiced_on
-                lem.invoice_number = "" if clear else invoice_number
-                lem.invoiced_by = None if clear else request.user
+                lem.invoice_number = invoice_number
+                lem.invoiced_by = request.user
                 lem.save(update_fields=["invoiced_on", "invoice_number", "invoiced_by"])
+                lem.set_status(LEMReport.STATUS_INVOICED, request.user, f"Invoice {invoice_number}")
+                lem.time_entries.update(is_locked=True)
         return Response({
             "updated": [lem.ticket_number for lem in lems],
-            "invoice_number": "" if clear else invoice_number,
+            "invoice_number": invoice_number,
             "invoiced_on": invoiced_on,
         })

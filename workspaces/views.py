@@ -2,8 +2,8 @@ from rest_framework import viewsets, permissions, filters
 from rest_framework.exceptions import PermissionDenied
 from django.db.models import Count, IntegerField, OuterRef, Prefetch, Subquery
 from django.db.models.functions import Coalesce
-from .models import Crew, Workspace, WorkspaceMember
-from .serializers import CrewSerializer, WorkspaceSerializer, WorkspaceMemberSerializer
+from .models import Workspace, WorkspaceMember
+from .serializers import WorkspaceSerializer, WorkspaceMemberSerializer
 from core.utils.logger import log_activity
 from .permissions import ADMIN_ONLY, MANAGE_ROLES, get_member_role, has_workspace_role, require_workspace_role
 
@@ -116,13 +116,7 @@ class WorkspaceMemberViewSet(viewsets.ModelViewSet):
         elif group:
             qs = qs.filter(group=group)
 
-        crew = self.request.query_params.get("crew")
-        if crew == "none":
-            qs = qs.filter(crew__isnull=True)
-        elif crew:
-            qs = qs.filter(crew_id=crew)
-
-        return qs.select_related("user", "workspace", "crew")
+        return qs.select_related("user", "workspace")
 
     # Writes: admins (and managers, for non-admin members) of the member's workspace — never a plain member.
     # Reads above are unchanged.
@@ -161,44 +155,3 @@ class WorkspaceMemberViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Only an admin can remove an admin.")
         instance.delete()
 
-
-class CrewViewSet(viewsets.ModelViewSet):
-    """Crews of the caller's workspaces (?workspace=<id> narrows to one). Everyone in the workspace can list them;
-    only workspace admins create, rename or delete them. Deleting a crew just leaves its members without one."""
-    serializer_class = CrewSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    pagination_class = None
-
-    def get_queryset(self):
-        user = self.request.user
-        qs = Crew.objects.filter(is_deleted=False)
-        if not user.is_superuser:
-            qs = qs.filter(workspace__members__user=user, workspace__members__is_deleted=False)
-        workspace_id = self.request.query_params.get("workspace")
-        if workspace_id:
-            qs = qs.filter(workspace_id=workspace_id)
-        members = WorkspaceMember.objects.filter(crew=OuterRef("pk"), is_deleted=False, is_active=True)
-        return (
-            qs.select_related("foreman")
-            .annotate(member_count=Coalesce(Subquery(
-                members.values("crew").annotate(n=Count("id")).values("n")[:1], output_field=IntegerField()
-            ), 0))
-            .distinct()
-        )
-
-    def perform_create(self, serializer):
-        require_workspace_role(self.request.user, serializer.validated_data["workspace"], ADMIN_ONLY,
-                               "Only a workspace admin can add crews.")
-        serializer.save()
-
-    def perform_update(self, serializer):
-        crew = serializer.instance
-        if "workspace" in serializer.validated_data and serializer.validated_data["workspace"].pk != crew.workspace_id:
-            raise PermissionDenied("A crew cannot be moved to another workspace.")
-        require_workspace_role(self.request.user, crew.workspace, ADMIN_ONLY, "Only a workspace admin can edit crews.")
-        serializer.save()
-
-    def perform_destroy(self, instance):
-        require_workspace_role(self.request.user, instance.workspace, ADMIN_ONLY, "Only a workspace admin can remove crews.")
-        WorkspaceMember.objects.filter(crew=instance).update(crew=None)
-        instance.delete()

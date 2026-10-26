@@ -256,7 +256,8 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
             return Response({"error": "Give a reason so the employee knows what to fix."}, status=400)
 
         for item in approval.items.filter(is_deleted=False).select_related("time_entry"):
-            if item.status != APPROVED:
+            ticket = item.time_entry.field_ticket()
+            if item.status != APPROVED and not (ticket and ticket.status == "invoiced"):
                 decide_item(item, REJECTED, request.user, reason)
         approval.status = "rejected"
         approval.notes = reason
@@ -299,6 +300,9 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         reason = str(request.data.get("reason") or "").strip()
         if not reason:
             return Response({"error": "Give a reason so the employee knows what to fix."}, status=400)
+        ticket = item.time_entry.field_ticket()
+        if ticket and ticket.status == "invoiced":
+            return Response({"error": f"This time is on invoiced field ticket {ticket.ticket_number} and can't be sent back."}, status=400)
 
         decide_item(item, REJECTED, request.user, reason)
         refresh_week_status(approval, request.user)
