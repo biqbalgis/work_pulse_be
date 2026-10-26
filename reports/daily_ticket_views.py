@@ -12,15 +12,8 @@ from rest_framework.views import APIView
 
 from core.utils.envision_time import ENVISION_TZ
 from workspaces.models import Workspace, WorkspaceMember
-from .cost_sheet_pdf_utils import generate_cost_sheet_pdf
-from .daily_ticket_pdf_utils import generate_daily_ticket_pdf
+from .boss_ticket_utils import BOSS_TEMPLATES
 from .models import DailyTicketDownload
-
-# template -> (PDF builder, download file name prefix)
-TEMPLATES = {
-    DailyTicketDownload.DAILY_TICKET: (generate_daily_ticket_pdf, "Daily_Ticket"),
-    DailyTicketDownload.COST_SHEET: (generate_cost_sheet_pdf, "Daily_Cost_Sheet"),
-}
 
 
 def _client_ip(request):
@@ -49,9 +42,9 @@ class DailyTicketDownloadView(APIView):
 
     def post(self, request):
         template = request.data.get("template") or DailyTicketDownload.DAILY_TICKET
-        if template not in TEMPLATES:
+        if template not in BOSS_TEMPLATES:
             return Response({"error": f"Unknown template '{template}'."}, status=400)
-        generate_pdf, file_prefix = TEMPLATES[template]
+        generate_pdf, file_prefix = BOSS_TEMPLATES[template]
         workspace = _resolve_workspace(request.user, request.data.get("workspace"))
 
         def build_pdf(ticket):

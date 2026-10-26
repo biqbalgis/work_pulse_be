@@ -40,15 +40,50 @@ from time_entries.models import TimeEntry
 from time_entries.serializers import FieldTicketEntrySerializer
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import ADMIN_ONLY, IsWorkspaceUser, has_workspace_role
-from .models import LEMReport, LEMRevision, format_display_number
-from .envision_pdf_utils import generate_envision_lem_pdf
+from .models import LEMReport, LEMRevision, LEMStatusEvent, format_display_number, split_year_prefix
+from user_permissions.models import UserPermission
+from .boss_ticket_utils import (
+    BOSS_TEMPLATES,
+    DEFAULT_TEMPLATE,
+    boss_data_from_snapshot,
+    build_boss_ticket_data,
+    render_boss_ticket,
+)
 from .envision_costing_pdf_utils import generate_envision_costing_pdf
 from .envision_costing_excel_utils import generate_envision_costing_xlsx
+
+
+# Workspace roles that see, download and void every field ticket in their workspace. Everyone else
+# (managers and field managers included) only gets the tickets they created themselves.
+FIELD_TICKET_ADMIN_ROLES = {"admin"}
 
 
 def _address_to_lines(address: str) -> list:
     """Split a comma-separated address string into PDF lines."""
     return [part.strip() for part in (address or "").split(",") if part.strip()]
+
+
+def _field_ticket_pdf(lem, report_data):
+    """(pdf_buffer, filename) for one version of a field ticket (report_data is the current one or a revision
+    snapshot), always on a BOSS template: the one stored with it (report_data "boss_template", else
+    LEMReport.template, else template 1). Tickets issued before the BOSS templates have no "boss" data; their
+    stored snapshot is converted, so they still print what was issued."""
+    template = report_data.get("boss_template") or lem.template
+    if template not in BOSS_TEMPLATES:
+        template = DEFAULT_TEMPLATE
+    data = report_data.get("boss")
+    if data is None:
+        data = boss_data_from_snapshot(report_data, lem.project)
+    number = report_data.get("lem_number") or lem.display_number
+    day = report_data.get("lem_date") or (str(lem.lem_date) if lem.lem_date else "")
+    return render_boss_ticket(template, number, day, data)
+
+
+def _invalid_template_response(template):
+    """400 for a template that isn't a BOSS one; None when it's valid or not given (template 1 is used)."""
+    if template and template not in BOSS_TEMPLATES:
+        return Response({"error": f"Unknown template '{template}'."}, status=400)
+    return None
 
 
 def _build_field_ticket_labour_and_equipment(entries):
@@ -95,7 +130,8 @@ def _build_field_ticket_labour_and_equipment(entries):
     for entry in entries:
         for usage in entry.asset_usages.all():
             asset = usage.asset
-            cost  = Decimal(usage.cost or 0)
+            # Non-billable time carries no cost.
+            cost  = Decimal(usage.cost or 0) if entry.is_billable_to_client else Decimal("0")
             total_cost += cost
 
             if asset.id not in asset_map:
@@ -305,7 +341,10 @@ class EnvisionLEMReportView(APIView):
             "sign_date":        sign_date if sign else "",
         }
 
+        pdf_data["boss_template"] = lem_report.template or DEFAULT_TEMPLATE
+        pdf_data["boss"] = build_boss_ticket_data(entries, project, task, prepared_by=request.user)
         lem_report.report_data = pdf_data
+        lem_report.template = pdf_data["boss_template"]
         lem_report.save()
         # Record exactly which entries this snapshot was built from — voiding
         # this LEM later only touches these, not every entry that happens to
@@ -313,7 +352,7 @@ class EnvisionLEMReportView(APIView):
         lem_report.time_entries.set(entries)
 
         try:
-            pdf_buffer = generate_envision_lem_pdf(pdf_data)
+            pdf_buffer, filename = _field_ticket_pdf(lem_report, pdf_data)
         except Exception as exc:
             if is_new:
                 lem_report.delete()
@@ -322,7 +361,7 @@ class EnvisionLEMReportView(APIView):
         return FileResponse(
             pdf_buffer,
             as_attachment=True,
-            filename=f"Envision_LEM_{ft_display_number}_{date_str}.pdf",
+            filename=filename,
             content_type="application/pdf",
         )
 
@@ -364,6 +403,13 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
     FTF_DB_PREFIX = "FTF-"
 
     def post(self, request):
+        # ?template=daily_ticket|cost_sheet issues the ticket on that BOSS template (the body is a bare array);
+        # template 1 when none is given.
+        template = request.query_params.get("template") or DEFAULT_TEMPLATE
+        invalid = _invalid_template_response(template)
+        if invalid:
+            return invalid
+
         serializer = FieldTicketEntrySerializer(data=request.data, many=True)
         serializer.is_valid(raise_exception=True)
         validated = list(serializer.validated_data)
@@ -478,15 +524,20 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
             "sign_name":        "",
             "sign_date":        "",
         }
+        pdf_data["boss_template"] = template
+        pdf_data["boss"] = build_boss_ticket_data(entries, project, task, prepared_by=request.user)
 
         lem_report.report_data = pdf_data
+        lem_report.template = template
         lem_report.save()
         # Record exactly these entries — this is the whole point of this
         # endpoint, so voiding it later only ever touches this submission.
         lem_report.time_entries.set(entries)
+        # Submitted: pending the consultant's / contractor's approval.
+        lem_report.set_status(LEMReport.STATUS_PENDING, request.user, "Submitted")
 
         try:
-            pdf_buffer = generate_envision_lem_pdf(pdf_data)
+            pdf_buffer, filename = _field_ticket_pdf(lem_report, pdf_data)
         except Exception as exc:
             lem_report.delete()
             return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
@@ -494,7 +545,7 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
         return FileResponse(
             pdf_buffer,
             as_attachment=True,
-            filename=f"Envision_LEM_{ft_display_number}_{date_str}.pdf",
+            filename=filename,
             content_type="application/pdf",
         )
 
@@ -514,10 +565,11 @@ class EnvisionFieldTicketListView(APIView):
     Visibility:
       - Superuser: every ticket of that type, optionally narrowed to one
         workspace via ?workspace=<id>.
-      - Member with an elevated role (admin/manager/field_manager) in a
-        workspace: every ticket of that type in that workspace, PLUS their
-        own (as requester) in any other workspace they belong to.
-      - Everyone else: only tickets of that type where they are the requester.
+      - Workspace admin, or anyone with the "Approve / reject field tickets"
+        permission there: every ticket of that type in that workspace, PLUS
+        their own (as requester) in any other workspace they belong to.
+      - Everyone else (managers and field managers included): only tickets
+        of that type where they are the requester.
 
     Query params (all optional except `type`):
         type        (str)   — "FT" | "FTF" | "CT", default "FT"
@@ -539,7 +591,7 @@ class EnvisionFieldTicketListView(APIView):
     """
 
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
-    ELEVATED_ROLES = {"admin", "manager", "field_manager"}
+    ELEVATED_ROLES = FIELD_TICKET_ADMIN_ROLES
     TYPE_PREFIXES = {"FT": "FT-", "FTF": "FTF-", "CT": "CT-"}
     DEFAULT_PAGE_SIZE = 20
     MAX_PAGE_SIZE = 100
@@ -557,27 +609,34 @@ class EnvisionFieldTicketListView(APIView):
             .annotate(effective_date=Coalesce("lem_date", TruncDate("created_at")))
         )
 
-        # Workspaces where this user may revise tickets (None = all, for superusers).
+        # Workspaces where this user may revise and delete tickets: the ones they admin (None = all, for superusers).
         self._revise_workspace_ids = None if user.is_superuser else set(
             WorkspaceMember.objects.filter(user=user, role="admin", is_active=True).values_list("workspace_id", flat=True)
         )
+        # ... and where they may mark tickets approved / rejected.
+        self._status_workspace_ids = _lem_status_workspace_ids(user)
+
+        status = request.GET.get("status", "").strip().lower()
+        if status:
+            if status not in dict(LEMReport.STATUS_CHOICES):
+                return Response({"error": "status must be pending, approved or rejected"}, status=400)
+            qs = qs.filter(status=status)
 
         if user.is_superuser:
             workspace_id = request.GET.get("workspace")
             if workspace_id:
                 qs = qs.filter(project__workspace_id=workspace_id)
         else:
-            elevated_workspace_ids = list(
-                WorkspaceMember.objects.filter(
-                    user=user, role__in=self.ELEVATED_ROLES,
-                ).values_list("workspace_id", flat=True)
-            )
+            elevated_workspace_ids = _lem_viewer_workspace_ids(user)
             if elevated_workspace_ids:
                 qs = qs.filter(Q(project__workspace_id__in=elevated_workspace_ids) | Q(requester=user))
             else:
                 qs = qs.filter(requester=user)
 
-        search = request.GET.get("search", "").strip()
+        search, search_year = split_year_prefix(request.GET.get("search", ""))
+        if search_year is not None:
+            # "26-000123": that number on a ticket dated in 2026
+            qs = qs.filter(effective_date__year=2000 + search_year)
         if search:
             revision_match = re.match(r"^(.+?)-r(\d+)$", search, re.IGNORECASE)
             if revision_match:
@@ -618,9 +677,18 @@ class EnvisionFieldTicketListView(APIView):
             "id": lem.id,
             "lem_number": lem.lem_number,
             "revision": lem.revision,
-            "display_number": lem.display_number,
+            "display_number": lem.ticket_number,
             "can_revise": lem.lem_number.startswith(REVISABLE_PREFIX) and (
                 self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
+            ),
+            "can_delete": (
+                self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
+            ),
+            "template": lem.template or DEFAULT_TEMPLATE,
+            "template_label": dict(LEMReport.TEMPLATE_CHOICES)[lem.template or DEFAULT_TEMPLATE],
+            **_lem_status_fields(lem),
+            "can_change_status": bool(lem.project_id) and (
+                self._status_workspace_ids is None or lem.project.workspace_id in self._status_workspace_ids
             ),
             "project_name": lem.project.name if lem.project else "-",
             "lem_date": str(lem.lem_date) if lem.lem_date else timezone.localtime(lem.created_at).date().isoformat(),
@@ -700,26 +768,25 @@ class EnvisionFieldTicketDownloadView(APIView):
     """
 
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
-    ELEVATED_ROLES = {"admin", "manager", "field_manager"}
+    ELEVATED_ROLES = FIELD_TICKET_ADMIN_ROLES
 
     def get(self, request):
         raw = request.GET.get("lem_number", "").strip()
         if not raw:
             return Response({"error": "lem_number query parameter is required"}, status=400)
 
-        try:
-            lem_report = LEMReport.objects.select_related("project__workspace", "requester").get(lem_number=raw)
-        except LEMReport.DoesNotExist:
+        lem_report = (
+            _lems_visible_to(request.user)
+            .select_related("project__workspace", "requester")
+            .filter(lem_number=raw)
+            .order_by("-id")
+            .first()
+        )
+        if not lem_report:
             return Response({"error": f"No field ticket found for number '{raw}'"}, status=404)
 
-        user = request.user
-        if not user.is_superuser and lem_report.requester_id != user.id:
-            workspace = lem_report.project.workspace if lem_report.project else None
-            is_elevated = workspace and WorkspaceMember.objects.filter(
-                user=user, workspace=workspace, role__in=self.ELEVATED_ROLES,
-            ).exists()
-            if not is_elevated:
-                return Response({"error": "You do not have permission to download this field ticket."}, status=403)
+        if not _can_view_lem(request.user, lem_report):
+            return Response({"error": "You do not have permission to download this field ticket."}, status=403)
 
         # ?revision=N downloads an earlier issued version; the current one needs no parameter.
         report_data = lem_report.report_data
@@ -738,21 +805,23 @@ class EnvisionFieldTicketDownloadView(APIView):
                 revision = requested_revision
 
         is_costing = lem_report.lem_number.startswith("CT-")
+        digits = lem_report.ticket_number_for(revision)
+        date_part = str(lem_report.lem_date) if lem_report.lem_date else ""
+        prefix_label = "Costing_LEM" if is_costing else "Field_Ticket_LEM"
+        filename = f"{prefix_label}_{digits}_{date_part}.pdf"
         try:
             if is_costing:
                 pdf_buffer = generate_envision_costing_pdf(report_data)
             else:
-                pdf_buffer = generate_envision_lem_pdf(report_data)
+                # Same BOSS template the ticket was issued on.
+                pdf_buffer, filename = _field_ticket_pdf(lem_report, report_data)
         except Exception as exc:
             return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
 
-        digits = format_display_number(lem_report.lem_number, revision)
-        date_part = str(lem_report.lem_date) if lem_report.lem_date else ""
-        prefix_label = "Costing_LEM" if is_costing else "Field_Ticket_LEM"
         return FileResponse(
             pdf_buffer,
             as_attachment=True,
-            filename=f"{prefix_label}_{digits}_{date_part}.pdf",
+            filename=filename,
             content_type="application/pdf",
         )
 
@@ -777,13 +846,12 @@ class EnvisionLEMSearchView(APIView):
         if not raw:
             return Response({"error": "lem_number query parameter is required"}, status=400)
 
-        # Normalise: strip FTF- prefix if caller included it, then re-add
-        digits = raw.replace(self.FTF_PREFIX, "").strip()
+        # Normalise: strip a "26-" year and the FTF- prefix if the caller included them, then re-add FTF-
+        digits = split_year_prefix(raw)[0].replace(self.FTF_PREFIX, "").strip()
         db_key = f"{self.FTF_PREFIX}{digits}"
 
-        try:
-            report = LEMReport.objects.get(lem_number=db_key)
-        except LEMReport.DoesNotExist:
+        report = _lems_visible_to(request.user).select_related("project__workspace").filter(lem_number=db_key).first()
+        if not report or not _can_view_lem(request.user, report):
             return Response(
                 {"error": f"No Field Ticket LEM found for number '{digits}'"},
                 status=404,
@@ -792,7 +860,7 @@ class EnvisionLEMSearchView(APIView):
         return Response({
             "lem_number":  digits,
             "revision":    report.revision,
-            "display_number": report.display_number,
+            "display_number": report.ticket_number,
             "report_data": report.report_data,
             "created_at":  report.created_at,
             "project":     str(report.project_id) if report.project else None,
@@ -829,8 +897,8 @@ class EnvisionLEMVoidView(APIView):
                              backwards compatibility with the existing
                              manual "void by number" search.
 
-    Allowed for: the LEM's own requester, or an admin/manager/field_manager
-    (or superuser) within the workspace that owns the LEM's project.
+    Allowed for: an admin (or superuser) within the workspace that owns the
+    LEM's project. The person who submitted it can't delete it themselves.
 
     Note: LEMs generated before the `time_entries` relation existed have
     nothing recorded on it, so voiding one soft-deletes the LEMReport but
@@ -839,14 +907,14 @@ class EnvisionLEMVoidView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
-    ELEVATED_ROLES = {"admin", "manager", "field_manager"}
+    ELEVATED_ROLES = FIELD_TICKET_ADMIN_ROLES
 
     def post(self, request):
-        raw = str(request.data.get("lem_number", "")).strip()
+        raw = split_year_prefix(str(request.data.get("lem_number", "")))[0]
         if not raw:
             return Response({"error": "lem_number is required"}, status=400)
 
-        lem_report = self._find_lem(raw)
+        lem_report = self._find_lem(raw, request.user)
         if not lem_report:
             return Response({"error": f"No LEM found for number '{raw}'"}, status=404)
 
@@ -858,8 +926,7 @@ class EnvisionLEMVoidView(APIView):
 
         workspace = lem_report.project.workspace
         user = request.user
-        is_owner = lem_report.requester_id == user.id
-        if not user.is_superuser and not is_owner:
+        if not user.is_superuser:
             is_elevated = WorkspaceMember.objects.filter(
                 user=user, workspace=workspace, role__in=self.ELEVATED_ROLES
             ).exists()
@@ -923,7 +990,7 @@ class EnvisionLEMVoidView(APIView):
     FTF_PREFIX = "FTF-"
     FT_PREFIX = "FT-"
 
-    def _find_lem(self, raw):
+    def _find_lem(self, raw, user):
         """Matches both field ticket series (FT- whole-day, FTF- per-
         submission). A fully-prefixed number is looked up exactly as given.
         Bare digits (no recognizable prefix at all) default to the FTF-
@@ -933,39 +1000,114 @@ class EnvisionLEMVoidView(APIView):
         and re-looked-up as FTF-, which would void a same-numbered but
         completely unrelated ticket."""
         raw = raw.strip()
+        lems = _lems_visible_to(user)
         if raw.startswith(self.FTF_PREFIX) or raw.startswith(self.FT_PREFIX):
-            return LEMReport.objects.filter(lem_number=raw).first()
+            return lems.filter(lem_number=raw).first()
         if raw.startswith("CT-") or raw.startswith("LEM-"):
             return None
 
         db_key = f"{self.FTF_PREFIX}{raw}"
-        return LEMReport.objects.filter(lem_number=db_key).first()
+        return lems.filter(lem_number=db_key).first()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Field ticket revisions
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _find_field_ticket_lem(raw):
+def _lems_visible_to(user):
+    """LEM numbers run per workspace (every workspace has its own FTF-000001), so a lookup by number only
+    searches the workspaces `user` belongs to. Superusers search all of them."""
+    lems = LEMReport.objects.all()
+    if user.is_superuser:
+        return lems
+    workspace_ids = WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
+    return lems.filter(project__workspace_id__in=workspace_ids)
+
+
+def _find_field_ticket_lem(raw, user):
     """FT-/FTF- numbers exactly as given; bare digits default to the FTF- series (same rule as the void
-    endpoint); CT-/LEM- numbers are never revisable and never match."""
-    raw = (raw or "").strip()
+    endpoint); CT-/LEM- numbers are never revisable and never match. Only `user`'s workspaces are searched."""
+    raw = split_year_prefix(raw)[0]
+    lems = _lems_visible_to(user).select_related("project__workspace", "requester")
     if raw.startswith("FTF-") or raw.startswith("FT-"):
-        return LEMReport.objects.select_related("project__workspace", "requester").filter(lem_number=raw).first()
+        return lems.filter(lem_number=raw).first()
     if raw.startswith("CT-") or raw.startswith("LEM-"):
         return None
-    return LEMReport.objects.select_related("project__workspace", "requester").filter(
-        lem_number=f"FTF-{raw}"
-    ).first()
+    return lems.filter(lem_number=f"FTF-{raw}").first()
+
+
+def _lem_viewer_workspace_ids(user):
+    """Workspaces where `user` sees every field ticket, not just their own: those they admin, and those where
+    they have the "Approve / reject field tickets" permission (they need the tickets to decide on them)."""
+    admin_ids = WorkspaceMember.objects.filter(
+        user=user, role__in=FIELD_TICKET_ADMIN_ROLES,
+    ).values_list("workspace_id", flat=True)
+    granted_ids = UserPermission.objects.filter(user=user, lem_approval=True).values_list("workspace_id", flat=True)
+    return set(admin_ids) | set(granted_ids)
 
 
 def _can_view_lem(user, lem):
     if user.is_superuser or lem.requester_id == user.id:
         return True
-    workspace = lem.project.workspace if lem.project_id else None
-    return bool(workspace) and WorkspaceMember.objects.filter(
-        user=user, workspace=workspace, role__in=EnvisionFieldTicketDownloadView.ELEVATED_ROLES,
-    ).exists()
+    return bool(lem.project_id) and lem.project.workspace_id in _lem_viewer_workspace_ids(user)
+
+
+def _lem_status_workspace_ids(user):
+    """Workspaces where `user` may mark field tickets approved / rejected (None = all, for superusers):
+    workspace admins, and anyone given the "Approve / reject field tickets" permission there."""
+    if user.is_superuser:
+        return None
+    admin_ids = WorkspaceMember.objects.filter(user=user, role="admin", is_active=True).values_list("workspace_id", flat=True)
+    granted_ids = UserPermission.objects.filter(user=user, lem_approval=True).values_list("workspace_id", flat=True)
+    return set(admin_ids) | set(granted_ids)
+
+
+def _can_change_lem_status(user, lem):
+    if not lem.project_id:
+        return False
+    allowed = _lem_status_workspace_ids(user)
+    return allowed is None or lem.project.workspace_id in allowed
+
+
+def _lem_status_fields(lem):
+    by = lem.status_changed_by
+    return {
+        "status": lem.status,
+        "status_label": lem.get_status_display(),
+        "status_note": lem.status_note,
+        "status_changed_by": (by.get_full_name() or by.email) if by else "",
+        "status_changed_at": lem.status_changed_at,
+    }
+
+
+class EnvisionLEMStatusView(APIView):
+    """
+    POST /api/reports/envision/lem/status/   {"lem_number": "...", "status": "approved" | "rejected", "note": "..."}
+
+    Records the consultant's / contractor's decision on a submitted field ticket. Allowed for workspace admins,
+    superusers and users with the "Approve / reject field tickets" permission in the ticket's workspace. A
+    rejection needs a reason; a rejected ticket is revised (lem/revise/), which puts it back to pending.
+    """
+
+    permission_classes = [IsAuthenticated]
+    SETTABLE = {LEMReport.STATUS_APPROVED, LEMReport.STATUS_REJECTED, LEMReport.STATUS_PENDING}
+
+    def post(self, request):
+        lem = _find_field_ticket_lem(str(request.data.get("lem_number", "")), request.user)
+        if not lem:
+            return Response({"error": "Field ticket not found."}, status=404)
+        if not _can_change_lem_status(request.user, lem):
+            return Response({"error": "You do not have permission to approve or reject field tickets."}, status=403)
+
+        status = str(request.data.get("status", "")).strip().lower()
+        if status not in self.SETTABLE:
+            return Response({"error": "status must be approved, rejected or pending"}, status=400)
+        note = str(request.data.get("note") or "").strip()
+        if status == LEMReport.STATUS_REJECTED and not note:
+            return Response({"error": "Give a reason for the rejection."}, status=400)
+
+        lem.set_status(status, request.user, note)
+        return Response({"lem_number": lem.lem_number, "display_number": lem.ticket_number, **_lem_status_fields(lem)})
 
 
 REVISABLE_PREFIX = "FTF-"
@@ -1006,7 +1148,7 @@ class EnvisionFieldTicketEntriesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        lem = _find_field_ticket_lem(request.GET.get("lem_number"))
+        lem = _find_field_ticket_lem(request.GET.get("lem_number"), request.user)
         if not lem:
             return Response({"error": "Field ticket not found."}, status=404)
         if not lem.lem_number.startswith(REVISABLE_PREFIX):
@@ -1051,13 +1193,14 @@ class EnvisionFieldTicketEntriesView(APIView):
 
         return Response({
             "lem_number": lem.lem_number,
-            "display_number": lem.display_number,
+            "display_number": lem.ticket_number,
             "revision": lem.revision,
             "project": str(lem.project_id),
             "project_name": lem.project.name,
             "task": str(lem.task_id) if lem.task_id else None,
             "task_name": lem.task.name if lem.task_id else "",
             "date": str(lem.lem_date) if lem.lem_date else (rows[0]["date"] if rows else None),
+            "template": lem.template or (lem.report_data or {}).get("boss_template") or DEFAULT_TEMPLATE,
             "entries": rows,
         })
 
@@ -1084,13 +1227,16 @@ class EnvisionFieldTicketReviseView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        lem = _find_field_ticket_lem(str(request.data.get("lem_number", "")))
+        lem = _find_field_ticket_lem(str(request.data.get("lem_number", "")), request.user)
         if not lem:
             return Response({"error": "Field ticket not found."}, status=404)
         if not lem.lem_number.startswith(REVISABLE_PREFIX):
             return Response({"error": NOT_REVISABLE_MESSAGE}, status=400)
         if not _can_revise_lem(request.user, lem):
             return Response({"error": "Only workspace admins can revise field tickets."}, status=403)
+        invalid = _invalid_template_response(request.data.get("template"))
+        if invalid:
+            return invalid
 
         serializer = FieldTicketRevisionEntrySerializer(data=request.data.get("entries"), many=True)
         serializer.is_valid(raise_exception=True)
@@ -1121,7 +1267,7 @@ class EnvisionFieldTicketReviseView(APIView):
     def _revise(self, request, lem, rows, payload_ids):
         # Lock the ticket so two admins revising at once get R01 and R02, not two R01s.
         lem = (
-            LEMReport.objects.select_for_update()
+            LEMReport.objects.select_for_update(of=("self",))
             .select_related("project__client", "project__workspace", "task", "requester")
             .get(pk=lem.pk)
         )
@@ -1208,27 +1354,34 @@ class EnvisionFieldTicketReviseView(APIView):
             "sign_name":        previous.get("sign_name", ""),
             "sign_date":        previous.get("sign_date", ""),
         }
+        # A revision stays on the ticket's BOSS template unless a different one is asked for.
+        template = request.data.get("template") or lem.template or previous.get("boss_template") or DEFAULT_TEMPLATE
+        pdf_data["boss_template"] = template
+        pdf_data["boss"] = build_boss_ticket_data(entries, project, task, prepared_by=lem.requester)
         try:
-            pdf_buffer = generate_envision_lem_pdf(pdf_data)
+            pdf_buffer, filename = _field_ticket_pdf(lem, pdf_data)
         except Exception as exc:
             raise _PdfFailed(str(exc)) from exc
 
         lem.report_data = pdf_data
         lem.revision = new_revision
+        lem.template = template
         lem.save()
         lem.time_entries.set(entries)
         LEMRevision.objects.create(
             lem=lem, revision=new_revision, report_data=pdf_data,
             time_entry_ids=[str(e.id) for e in entries], created_by=request.user,
         )
+        # A revision is a resubmission: it goes back to the consultant / contractor as pending.
+        lem.set_status(LEMReport.STATUS_PENDING, request.user, f"Resubmitted as revision R{new_revision:02d}")
 
         response = FileResponse(
             pdf_buffer,
             as_attachment=True,
-            filename=f"Envision_LEM_{pdf_data['lem_number']}_{date_str}.pdf",
+            filename=filename,
             content_type="application/pdf",
         )
-        response["X-LEM-Display-Number"] = pdf_data["lem_number"]
+        response["X-LEM-Display-Number"] = lem.ticket_number
         return response
 
 
@@ -1247,7 +1400,7 @@ class EnvisionFieldTicketHistoryView(APIView):
     permission_classes = [IsAuthenticated, IsWorkspaceUser]
 
     def get(self, request):
-        lem = _find_field_ticket_lem(request.GET.get("lem_number"))
+        lem = _find_field_ticket_lem(request.GET.get("lem_number"), request.user)
         if not lem:
             return Response({"error": "Field ticket not found."}, status=404)
         if not _can_view_lem(request.user, lem):
@@ -1262,18 +1415,32 @@ class EnvisionFieldTicketHistoryView(APIView):
             by = snapshot.created_by if snapshot else lem.requester
             versions.append({
                 "revision": number,
-                "display_number": format_display_number(lem.lem_number, number),
+                "display_number": lem.ticket_number_for(number),
                 "is_current": is_current,
                 "created_at": snapshot.created_at if snapshot else lem.created_at,
                 "created_by": (by.get_full_name() or by.email) if by else "-",
                 "total_hours": _fmt_money(_sum_labour_hours(data)),
                 "downloadable": is_current or bool(snapshot),
             })
+        status_events = [
+            {
+                "status": event.status,
+                "status_label": event.get_status_display(),
+                "note": event.note,
+                "revision": event.revision,
+                "display_number": lem.ticket_number_for(event.revision),
+                "changed_by": (event.changed_by.get_full_name() or event.changed_by.email) if event.changed_by else "-",
+                "created_at": event.created_at,
+            }
+            for event in lem.status_events.select_related("changed_by").order_by("-created_at", "-id")
+        ]
         return Response({
             "lem_number": lem.lem_number,
-            "display_number": lem.display_number,
+            "display_number": lem.ticket_number,
             "revision": lem.revision,
+            **_lem_status_fields(lem),
             "versions": versions,
+            "status_events": status_events,
         })
 
 

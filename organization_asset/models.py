@@ -29,6 +29,10 @@ class OrganizationAsset(SoftDeleteModel):
     hourly_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     quantity_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     total_quantity = models.PositiveIntegerField(default=0, null=True, blank=True)
+    # Equipment (dozer, grader, ...) vs a rate such as OPFC (one person field crew). On a field ticket
+    # equipment is picked in the Equipment column and prints with equipment; rates are picked in the Rates
+    # column and print in the labour section.
+    is_equipment = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

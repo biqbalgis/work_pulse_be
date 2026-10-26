@@ -684,7 +684,7 @@ class DailyWorkReportView(APIView):
                                 "cost": 0.0
                             }
                         asset_costs[asset.name]["units"] += round(float(usage.quantity_used or 0), 2)
-                        asset_costs[asset.name]["cost"] += round(float(usage.cost), 2)
+                        asset_costs[asset.name]["cost"] += round(float(usage.cost), 2) if entry.is_billable_to_client else 0.0
 
                     elif asset.charge_type == "hourly":
                         entries_map[key]["equip"] += 1
@@ -699,7 +699,7 @@ class DailyWorkReportView(APIView):
                                 "cost": 0.0
                             }
                         asset_costs[asset.name]["hours"] += hours
-                        asset_costs[asset.name]["cost"] += round(float(usage.cost), 2)
+                        asset_costs[asset.name]["cost"] += round(float(usage.cost), 2) if entry.is_billable_to_client else 0.0
 
                 # 2. Descriptions
                 if entry.description:
@@ -715,7 +715,7 @@ class DailyWorkReportView(APIView):
                         "cost": 0.0
                     }
                 personnel_costs[role_name]["hours"] += hours
-                personnel_costs[role_name]["cost"] += round(float(entry.cost), 2)
+                personnel_costs[role_name]["cost"] += round(float(entry.cost), 2) if entry.is_billable_to_client else 0.0
 
             # Convert entries map to list
             entries_list = []
@@ -1105,6 +1105,10 @@ class LEMCostingReportView(APIView):
             weekly_sum = user_weekly_hours.get(user.id, 0.0)
             
             cost_map = calculator.calculate_daily_cost_for_user(this_project_entries, weekly_sum)
+            if not project.billable:
+                # Non-billable project: hours only, no costs.
+                for data in cost_map.values():
+                    data["cost"] = 0
             
             for jt_name, data in cost_map.items():
                 report_rows.append({

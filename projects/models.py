@@ -18,7 +18,8 @@ class Project(SoftDeleteModel):
     ot_multiplier = models.DecimalField(max_digits=5, decimal_places=2, default=2)  # default double rate
     pm_info = models.JSONField(default=dict, blank=True, null=True)
     is_active = models.BooleanField(default=True)
-    billable = models.BooleanField(default=False)
+    # Non-billable projects: hours are recorded and shown, but never count toward client costs or invoices.
+    billable = models.BooleanField(default=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_projects')
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:

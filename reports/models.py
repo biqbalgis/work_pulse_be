@@ -1,4 +1,6 @@
 
+import re
+
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, models, transaction
@@ -36,6 +38,36 @@ class LEMReport(SoftDeleteModel):
     # itself never changes — the revision is shown as a suffix, e.g. "000012-R01".
     revision = models.PositiveIntegerField(default=0)
 
+    # The BOSS paper template the ticket was issued on ("daily_ticket" / "cost_sheet"). Every re-download and
+    # revision prints on this same template.
+    TEMPLATE_CHOICES = (
+        ("daily_ticket", "Template 1 - Daily Ticket"),
+        ("cost_sheet", "Template 2 - Daily Cost Sheet"),
+    )
+    template = models.CharField(max_length=20, choices=TEMPLATE_CHOICES, default="daily_ticket")
+
+    # Approval by the consultant / contractor, recorded by a team member with the LEM approval permission.
+    # A new ticket (and every revision of it) is pending; set_status() logs each change in LEMStatusEvent.
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = (
+        (STATUS_PENDING, "Pending"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    status_note = models.TextField(blank=True, default="")
+    status_changed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    status_changed_at = models.DateTimeField(null=True, blank=True)
+
+    # Provision for e-mailing the ticket to the project's consultant with Approve / Reject buttons (not used
+    # yet): a one-time token for that link and when it stops working.
+    approval_token = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    approval_token_expires_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         unique_together = [['project', 'lem_number']]
         indexes = [
@@ -71,18 +103,63 @@ class LEMReport(SoftDeleteModel):
             self.lem_number = f"LEM-{new_number:03d}"
         super().save(*args, **kwargs)
 
+    def set_status(self, status, user=None, note=""):
+        """Change the approval status and log it (LEMStatusEvent). Saves only the status fields."""
+        self.status = status
+        self.status_note = note or ""
+        self.status_changed_by = user
+        self.status_changed_at = timezone.now()
+        self.save(update_fields=["status", "status_note", "status_changed_by", "status_changed_at"])
+        LEMStatusEvent.objects.create(lem=self, revision=self.revision, status=status, note=self.status_note,
+                                      changed_by=user)
+
     @property
     def display_number(self):
         """Bare number without the FT-/FTF-/CT- prefix, plus "-R01" style suffix once revised."""
         return format_display_number(self.lem_number, self.revision)
 
+    @property
+    def ticket_number(self):
+        """The number people see in the app: the ticket date's year + display_number, e.g. "26-000123-R01"."""
+        return self.ticket_number_for(self.revision)
+
+    def ticket_number_for(self, revision):
+        day = self.lem_date or (timezone.localtime(self.created_at).date() if self.created_at else None)
+        base = format_display_number(self.lem_number, revision)
+        return f"{day:%y}-{base}" if day else base
+
     def __str__(self):
         return self.lem_number
+
+
+def split_year_prefix(number):
+    """("000123-R01", 26) for a year-prefixed ticket number like "26-000123-R01"; (number, None) otherwise."""
+    match = re.match(r"^(\d{2})-(\d.*)$", (number or "").strip())
+    if match:
+        return match.group(2), int(match.group(1))
+    return (number or "").strip(), None
 
 
 def format_display_number(lem_number, revision=0):
     base = (lem_number or "").split("-", 1)[-1]
     return f"{base}-R{revision:02d}" if revision else base
+
+
+class LEMStatusEvent(models.Model):
+    """One step in a field ticket's approval history: submitted / resubmitted (pending), approved or rejected."""
+
+    lem = models.ForeignKey(LEMReport, on_delete=models.CASCADE, related_name="status_events")
+    revision = models.PositiveIntegerField(default=0)
+    status = models.CharField(max_length=20, choices=LEMReport.STATUS_CHOICES)
+    note = models.TextField(blank=True, default="")
+    changed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self):
+        return f"{self.lem.lem_number} r{self.revision} {self.status}"
 
 
 class LEMRevision(models.Model):
@@ -118,7 +195,7 @@ class DailyTicketDownload(models.Model):
     )
 
     # Each template has its own number series. The printed number is "<yy>-<sequence>": the counter
-    # restarts on January 1 (Alberta time), so the first ticket of 2027 is "27-00001".
+    # restarts on January 1 (Alberta time), so the first ticket of 2027 is "27-000001".
     # (template, year, sequence) is unique, so numbers are never reused within a series.
     template = models.CharField(max_length=20, choices=TEMPLATE_CHOICES, default=DAILY_TICKET)
     year = models.PositiveSmallIntegerField()
@@ -166,7 +243,7 @@ class DailyTicketDownload(models.Model):
                         template=template,
                         year=year,
                         sequence=sequence,
-                        ticket_number=f"{year % 100:02d}-{sequence:05d}",
+                        ticket_number=f"{year % 100:02d}-{sequence:06d}",
                         workspace=workspace,
                         downloaded_by=user,
                         downloaded_at=now,

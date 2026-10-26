@@ -77,7 +77,7 @@ def _calculate_standard(approval_items, breakdown):
         daily_project_hours[key] += hours
         project_rates[key] = {
             "hourly_rate": entry.hourly_rate,
-            "billable": entry.billable,
+            "billable": entry.is_billable_to_client,
             "project": project,
         }
 
@@ -132,7 +132,7 @@ def _calculate_no_policy(approval_items, breakdown):
         project = entry.project
         hours = round(Decimal(entry.duration) / Decimal(60), 2)
 
-        if entry.billable:
+        if entry.is_billable_to_client:
             rt_cost = Decimal(entry.hourly_rate or 0) * hours
         else:
             rt_cost = Decimal("0.00")
@@ -213,7 +213,7 @@ def _calculate_envision(approval_items, breakdown):
         weekly_rt_used[week_sunday] += rt
 
         hourly = Decimal(entry.hourly_rate or 0)
-        if entry.billable:
+        if entry.is_billable_to_client:
             rt_cost = hourly * rt
             ot_cost = hourly * ENVISION_OT_MULTIPLIER * ot
         else:

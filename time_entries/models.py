@@ -34,5 +34,16 @@ class TimeEntry(SoftDeleteModel):
             models.Index(fields=['user', 'start_time'], name='timeentry_user_start_idx'),
         ]
 
+    def save(self, *args, **kwargs):
+        # Time on a non-billable project is never billable to the client.
+        if self.project_id and self.billable and not self.project.billable:
+            self.billable = False
+        super().save(*args, **kwargs)
+
+    @property
+    def is_billable_to_client(self):
+        """Counts toward client costs and invoices: the entry and its project are both billable."""
+        return bool(self.billable and (self.project is None or self.project.billable))
+
     def __str__(self):
         return f"{self.user} - {self.project}"

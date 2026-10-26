@@ -32,6 +32,8 @@ class UserPermission(models.Model):
     clients           = models.BooleanField(default=False)
     organization      = models.BooleanField(default=False)
     team              = models.BooleanField(default=False)
+    # Not a section: allows marking field tickets (LEMs) Approved / Rejected.
+    lem_approval      = models.BooleanField(default=False)
 
     updated_at = models.DateTimeField(auto_now=True)
 

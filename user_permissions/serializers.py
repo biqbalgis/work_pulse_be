@@ -16,6 +16,7 @@ PERMISSION_FIELDS = [
     "clients",
     "organization",
     "team",
+    "lem_approval",
 ]
 
 

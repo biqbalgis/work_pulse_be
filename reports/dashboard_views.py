@@ -245,9 +245,11 @@ class DashboardFieldTicketsView(APIView):
                 continue
 
             hours = sum((e.duration or 0) for e in entries) / Decimal(60)
-            labor_cost = sum((e.cost or Decimal(0)) for e in entries)
+            # Non-billable time shows its hours but no cost.
+            billable_entries = [e for e in entries if e.is_billable_to_client]
+            labor_cost = sum((e.cost or Decimal(0)) for e in billable_entries)
             asset_cost = sum(
-                (au.cost or Decimal(0)) for e in entries for au in e.asset_usages.all()
+                (au.cost or Decimal(0)) for e in billable_entries for au in e.asset_usages.all()
             )
 
             bucket = by_project.setdefault(lem.project_id, {
@@ -292,6 +294,8 @@ class DashboardAssetCostsView(APIView):
 
         by_project = {}
         for usage in qs:
+            if not usage.time_entry.is_billable_to_client:
+                continue  # non-billable time carries no cost
             project = usage.time_entry.project
             bucket = by_project.setdefault(project.id, {
                 "project_id": str(project.id),

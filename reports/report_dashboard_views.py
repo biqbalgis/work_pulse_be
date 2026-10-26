@@ -34,7 +34,7 @@ from collections import defaultdict
 from datetime import timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import DecimalField, Exists, OuterRef, Q, Subquery, Sum, Value
+from django.db.models import BooleanField, DecimalField, Exists, ExpressionWrapper, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -111,10 +111,11 @@ def _filtered_entries(request):
         qs = qs.filter(project_id__in=project_ids)
     if task_ids:
         qs = qs.filter(task_id__in=task_ids)
+    # Time on a non-billable project is never billable, whatever the entry says.
     if billable == "billable":
-        qs = qs.filter(billable=True)
+        qs = qs.filter(billable=True).exclude(project__billable=False)
     elif billable == "non_billable":
-        qs = qs.filter(billable=False)
+        qs = qs.filter(Q(billable=False) | Q(project__billable=False))
     if description:
         qs = qs.filter(description__icontains=description)
     if statuses:
@@ -142,7 +143,11 @@ def _with_asset_cost(qs):
     )
     return qs.annotate(
         asset_cost=Coalesce(Subquery(usages, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                            Value(0), output_field=DecimalField(max_digits=14, decimal_places=2))
+                            Value(0), output_field=DecimalField(max_digits=14, decimal_places=2)),
+        # Billable to the client: the entry and its project are both billable.
+        client_billable=ExpressionWrapper(
+            Q(billable=True) & (Q(project__isnull=True) | Q(project__billable=True)), output_field=BooleanField(),
+        ),
     )
 
 
@@ -171,7 +176,7 @@ class ReportDashboardSummaryView(_ReportDashboardBase):
 
         facts = defaultdict(lambda: [0, 0, 0.0])  # key -> [minutes, entries, amount]
         for start, user_id, project_id, task_id, billable, description, duration, cost in _with_asset_cost(qs).values_list(
-            "start_time", "user_id", "project_id", "task_id", "billable", "description", "duration", "asset_cost"
+            "start_time", "user_id", "project_id", "task_id", "client_billable", "description", "duration", "asset_cost"
         ).iterator():
             minutes = duration or 0
             if minutes <= 0:
@@ -267,7 +272,7 @@ class ReportDashboardEntriesView(_ReportDashboardBase):
                 "task": e.task.name if e.task else None,
                 "description": e.description or "",
                 "minutes": e.duration,
-                "billable": bool(e.billable),
-                "amount": round(float(e.asset_cost or 0), 2) if e.billable else 0.0,
+                "billable": bool(e.client_billable),
+                "amount": round(float(e.asset_cost or 0), 2) if e.client_billable else 0.0,
             })
         return Response({"count": count, "page": page, "page_size": page_size, "results": results})
