@@ -8,7 +8,7 @@ Body:
     date_from     (str, required)   YYYY-MM-DD
     date_to       (str, required)   YYYY-MM-DD
     interval      (str, required)   "daily" | "weekly" | "biweekly" | "monthly"
-    metrics       (list, required)  any of "total" | "regular" | "overtime"
+    metrics       (list, required)  any of "total" | "regular" | "overtime" | "double_time"
     group_by      (list, required)  1-2 of "project" | "user" | "task" | "group"
     project_ids   (list, optional)  empty/omitted = all projects (incl. none)
     user_ids      (list, optional)  empty/omitted = all employees
@@ -44,7 +44,7 @@ from tasks.models import Task
 from time_entries.models import TimeEntry
 from user_permissions.models import UserPermission
 from users.models import User
-from workspaces.models import Workspace, WorkspaceMember
+from workspaces.models import WorkspaceMember
 
 from .custom_report_utils import (
     CHART_TYPES,
@@ -244,16 +244,11 @@ class CustomReportView(APIView):
                 members = members.filter(workspace_id__in=workspace_ids)
             group_lookup = {(uid, wid): grp for uid, wid, grp in members.values_list("user_id", "workspace_id", "group")}
 
-        policy_by_workspace = dict(
-            Workspace.objects.filter(id__in={e.workspace_id for e in entries}).values_list("id", "overtime_policy")
-        )
-
         buckets, date_to_bucket = build_buckets(date_from, date_to, interval)
         cells = aggregate_hours(
             entries, date_from, date_to, date_to_bucket, group_by,
             include_entry=(lambda e: e.project_id in project_set) if project_set else (lambda e: True),
             group_lookup=group_lookup,
-            policy_by_workspace=policy_by_workspace,
         )
         if not cells:
             return Response({"error": "No time entries found for the selected filters."}, status=404)

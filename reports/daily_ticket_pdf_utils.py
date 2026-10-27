@@ -237,7 +237,8 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
     # ── Labour (left) ────────────────────────────────────────────────────
     table_top = desc_bottom - 8
     split = 312
-    labour_cols = [("RT", 28), ("OT", 28), ("EMPLOYEE", 112), ("PRICE", 50), ("AMOUNT", split - LEFT - 218)]
+    # RT 1x, OT 1.5x, DT 2x (double time: overtime on a stat holiday).
+    labour_cols = [("RT", 24), ("OT", 24), ("DT", 24), ("EMPLOYEE", 96), ("PRICE", 50), ("AMOUNT", split - LEFT - 218)]
     labour_body_top = _header_row(c, LEFT, split, table_top, labour_cols)
     y = _grid(c, LEFT, split, labour_body_top, LABOUR_ROWS, [w for _, w in labour_cols[:-1]])
     labour_amount_x = split - labour_cols[-1][1]
@@ -250,9 +251,10 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
         base = labour_body_top - i * ROW_H - 12
         _text(c, (col_x[0] + col_x[1]) / 2, base, row.get("rt", ""), size=8.5, align="center")
         _text(c, (col_x[1] + col_x[2]) / 2, base, row.get("ot", ""), size=8.5, align="center")
-        _text(c, col_x[2] + 3, base, _fit(row.get("name", ""), labour_cols[2][1] - 6, 8.5), size=8.5)
-        _text(c, col_x[4] - 3, base, row.get("rate", ""), size=8.5, align="right")
-        _text(c, col_x[5] - 3, base, row.get("amount", ""), size=8.5, align="right")
+        _text(c, (col_x[2] + col_x[3]) / 2, base, row.get("dt", ""), size=8.5, align="center")
+        _text(c, col_x[3] + 3, base, _fit(row.get("name", ""), labour_cols[3][1] - 6, 8.5), size=8.5)
+        _text(c, col_x[5] - 3, base, row.get("rate", ""), size=8.5, align="right")
+        _text(c, col_x[6] - 3, base, row.get("amount", ""), size=8.5, align="right")
     if is_last and filled.get("labour_total"):
         _text(c, split - 3, labour_bottom + 5.5, filled["labour_total"], size=8.5, bold=True, align="right")
 

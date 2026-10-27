@@ -6,32 +6,16 @@ The caller picks filters (projects / employees / date range), a time interval
 overtime) and how rows are grouped (up to two of project / employee / task).
 Nothing here is persisted — the result is a one-off .xlsx, never a LEMReport.
 
-Regular vs Overtime follows each workspace's overtime policy
-(Workspace.overtime_policy), the same rules approvals/payroll use
-(approvals.utils.calculate_rt_ot_and_cost):
-
-  "envision" — an Alberta statutory holiday is 100% OT (and doesn't count toward
-               the weekly Regular hours). On every other day the first 8h is
-               Regular and anything beyond is OT, and Regular is capped at 44h
-               per Sun-Sat week: once a week's Regular hours reach 44, the
-               remaining hours that week are OT.
-  "standard" — per day and per project, Regular up to project.default_rt_hours
-               (8h when unset), the rest is OT.
-  none       — every hour is Regular.
-
-For Envision that split is a property of an employee's TOTAL hours that
-day/week across every project, so it is computed over full Sun-Sat weeks of ALL
-the employee's entries first, walking them in the order they were worked
-(start time, Mountain-time days) — like approvals' Envision calculation, but
-entries that start at the same moment share the split in proportion to hours —
-and each entry's Regular/OT is then added to its report cell if it passes the
-project filter.
+Regular / Overtime / Double time follow the pay rules every part of the app uses (core.utils.pay_rules): the
+first 8 hours of an employee's day (all their projects together, in the order worked) are Regular and the rest
+Overtime (1.5x); on a stat holiday the first 8 hours are Overtime and the rest Double time (2x). The split is a
+property of the employee's whole day, so it is worked out from ALL their entries that day first, and each entry's
+share is then added to its report cell if it passes the project filter.
 """
 
 import io
 from collections import defaultdict
 from datetime import timedelta
-from itertools import groupby
 
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
@@ -39,18 +23,18 @@ from openpyxl.chart.label import DataLabelList
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from approvals.utils import ENVISION_DAILY_RT_CAP, ENVISION_WEEKLY_RT_CAP
-from core.utils.envision_time import alberta_stat_holidays, utc_to_envision_local
+from core.utils.envision_time import utc_to_envision_local
+from core.utils.pay_rules import split_entries
 from workspaces.models import WorkspaceMember
 from .envision_timesheet_utils import _week_sunday
 
-ENVISION_DAILY_RT = float(ENVISION_DAILY_RT_CAP)    # 8h Regular per day
-ENVISION_WEEKLY_RT = float(ENVISION_WEEKLY_RT_CAP)  # 44h Regular per Sun-Sat week
-STANDARD_DEFAULT_DAILY_RT = 8.0
+METRICS_ORDER = ("total", "regular", "overtime", "double_time")
+METRIC_LABELS = {"total": "Total", "regular": "Regular", "overtime": "Overtime", "double_time": "Double time"}
+METRIC_INDEX = {metric: index for index, metric in enumerate(METRICS_ORDER)}
 
-METRICS_ORDER = ("total", "regular", "overtime")
-METRIC_LABELS = {"total": "Total", "regular": "Regular", "overtime": "Overtime"}
-METRIC_INDEX = {"total": 0, "regular": 1, "overtime": 2}
+
+def _zeros():
+    return [0.0] * len(METRICS_ORDER)
 GROUP_DIMS = ("project", "user", "task", "group")
 GROUP_LABELS = {"project": "Project", "user": "Employee", "task": "Task", "group": "User Group"}
 INTERVALS = ("daily", "weekly", "biweekly", "monthly")
@@ -149,89 +133,28 @@ def aggregate_hours(entries, date_from, date_to, date_to_bucket, group_by, inclu
     entries             — every TimeEntry (all projects) for the relevant employees
                           across the full Sun-Sat weeks covering the range
     include_entry       — predicate: does this entry appear in the report (project
-                          filter)? RT/OT is still computed from ALL entries.
+                          filter)? The split is still worked out from ALL entries.
     group_lookup        — {(user_id, workspace_id): group value}, only needed when
                           grouping by "group".
-    policy_by_workspace — {workspace_id: overtime_policy}; entries of a workspace
-                          follow its policy ("envision" / "standard" / none).
-                          Omitted = every entry uses the Envision policy.
-    Returns {group_key_tuple: {bucket_idx: [total, regular, overtime]}}.
+    policy_by_workspace — no longer used (one set of pay rules for everyone).
+    Returns {group_key_tuple: {bucket_idx: [total, regular, overtime, double_time]}}.
     """
-    week_start, week_end = week_range_for(date_from, date_to)
-    stat_holidays = alberta_stat_holidays(range(week_start.year, week_end.year + 1))
+    entries = [e for e in entries if (e.duration or 0) > 0]
+    in_range = [e for e in entries if date_from <= utc_to_envision_local(e.start_time).date() <= date_to]
+    splits = split_entries(in_range, context=entries)
 
-    dated = []
-    for entry in entries:
-        if (entry.duration or 0) <= 0:
+    cells = defaultdict(lambda: defaultdict(_zeros))
+    for entry in in_range:
+        if not include_entry(entry):
             continue
-        local_date = utc_to_envision_local(entry.start_time).date()
-        if week_start <= local_date <= week_end:
-            dated.append((entry, local_date))
-    # Chronological, so Regular hours are used up by earlier work and OT lands on later work.
-    dated.sort(key=lambda item: (item[0].start_time, str(item[0].user_id), item[0].created_at, str(item[0].id)))
-
-    envision_daily_used = defaultdict(float)   # (user, day)            -> Regular hours used
-    envision_weekly_used = defaultdict(float)  # (user, week's Sunday)  -> Regular hours used
-    standard_used = defaultdict(float)         # (user, day, project)   -> Regular hours used
-
-    def regular_hours(policy, entry, day, hours):
-        """Regular part of `hours` worked now under `policy`; consumes the matching allowances."""
-        if policy == "envision":
-            if day in stat_holidays:
-                return 0.0  # statutory holiday: every hour is OT and none of it uses up the weekly Regular allowance
-            day_key = (entry.user_id, day)
-            week_key = (entry.user_id, _week_sunday(day))
-            room = max(
-                min(ENVISION_DAILY_RT - envision_daily_used[day_key], ENVISION_WEEKLY_RT - envision_weekly_used[week_key]),
-                0.0,
-            )
-            regular = min(hours, room)
-            envision_daily_used[day_key] += regular
-            envision_weekly_used[week_key] += regular
-            return regular
-        if policy == "standard":
-            project = entry.project
-            cap = (
-                float(project.default_rt_hours)
-                if project is not None and project.default_rt_hours is not None
-                else STANDARD_DEFAULT_DAILY_RT
-            )
-            std_key = (entry.user_id, day, entry.project_id)
-            regular = min(hours, max(cap - standard_used[std_key], 0.0))
-            standard_used[std_key] += regular
-            return regular
-        return hours  # no overtime policy: everything is Regular
-
-    cells = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0, 0.0]))
-
-    # Entries of one employee that start at the same moment (e.g. a whole-day field ticket split across
-    # projects) happened concurrently — there's no real order between them, so they share the Regular /
-    # OT split in proportion to their hours instead of the first one arbitrarily taking all the Regular.
-    for _key, concurrent in groupby(dated, key=lambda item: (item[0].start_time, item[0].user_id)):
-        concurrent = list(concurrent)
-        day = concurrent[0][1]
-
-        subgroups = defaultdict(list)
-        for entry, _day in concurrent:
-            policy = "envision" if policy_by_workspace is None else policy_by_workspace.get(entry.workspace_id)
-            subgroups[(policy, entry.project_id if policy == "standard" else None)].append(entry)
-
-        for (policy, _project), group_entries in subgroups.items():
-            group_hours = sum(e.duration for e in group_entries) / 60.0
-            group_regular = regular_hours(policy, group_entries[0], day, group_hours)
-
-            if not (date_from <= day <= date_to):
-                continue  # before/after the range: only needed to advance the daily/weekly allowances
-            for entry in group_entries:
-                if not include_entry(entry):
-                    continue
-                hours = entry.duration / 60.0
-                regular = group_regular * (hours / group_hours)
-                key = tuple(_dim_key(entry, dim, group_lookup) for dim in group_by)
-                cell = cells[key][date_to_bucket[day]]
-                cell[0] += hours
-                cell[1] += regular
-                cell[2] += hours - regular
+        split = splits[entry.id]
+        day = utc_to_envision_local(entry.start_time).date()
+        key = tuple(_dim_key(entry, dim, group_lookup) for dim in group_by)
+        cell = cells[key][date_to_bucket[day]]
+        cell[0] += entry.duration / 60.0
+        cell[1] += float(split.rt)
+        cell[2] += float(split.ot)
+        cell[3] += float(split.dt)
 
     return cells
 
@@ -336,7 +259,7 @@ def generate_custom_report_xlsx(
     # ── Body ──────────────────────────────────────────────────────────────────
     def vector(bucket_map):
         """Per-bucket [t, r, o] list (zeros where empty) + range totals."""
-        per_bucket = [list(bucket_map.get(i, (0.0, 0.0, 0.0))) for i in range(len(buckets))]
+        per_bucket = [list(bucket_map.get(i, _zeros())) for i in range(len(buckets))]
         totals = [sum(b[k] for b in per_bucket) for k in range(3)]
         return per_bucket, totals
 
@@ -358,7 +281,7 @@ def generate_custom_report_xlsx(
                 acc[i][k] += b[k]
 
     sort_key = lambda key_el: (key_el[0].lower(), key_el[1])  # noqa: E731
-    grand = [[0.0, 0.0, 0.0] for _ in buckets]
+    grand = [_zeros() for _ in buckets]
     r = first_body_row
 
     if n_group == 1:
@@ -369,7 +292,7 @@ def generate_custom_report_xlsx(
             r += 1
     else:
         for primary in sorted({k[0] for k in cells}, key=sort_key):
-            block = [[0.0, 0.0, 0.0] for _ in buckets]
+            block = [_zeros() for _ in buckets]
             for key in sorted((k for k in cells if k[0] == primary), key=lambda k: sort_key(k[1])):
                 per_bucket, totals = vector(cells[key])
                 write_row(r, [key[0][0], key[1][0]], per_bucket, totals, NORMAL_FONT, None)
@@ -418,7 +341,7 @@ def _add_chart_sheet(wb, cells, buckets, metrics, group_by, chart_type):
         category_header = "Period"
         rows = []
         for i, bucket in enumerate(buckets):
-            totals = [0.0, 0.0, 0.0]
+            totals = _zeros()
             for bucket_map in cells.values():
                 cell = bucket_map.get(i)
                 if cell:
@@ -428,7 +351,7 @@ def _add_chart_sheet(wb, cells, buckets, metrics, group_by, chart_type):
         series_metrics = metrics
         series_idx = m_idx
     else:
-        by_primary = defaultdict(lambda: [0.0, 0.0, 0.0])
+        by_primary = defaultdict(_zeros)
         for key, bucket_map in cells.items():
             for cell in bucket_map.values():
                 for k in range(3):

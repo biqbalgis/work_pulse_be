@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     'organization_asset',
     'reports',
     'user_permissions',
+    'notifications',
     'corsheaders',
     'msgraphbackend',
 

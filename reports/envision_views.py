@@ -42,6 +42,8 @@ from workspaces.models import WorkspaceMember
 from workspaces.permissions import ADMIN_ONLY, IsWorkspaceUser, has_workspace_role
 from .models import LEMReport, LEMRevision, LEMStatusEvent, format_display_number, split_year_prefix
 from user_permissions.models import UserPermission
+from notifications.models import Notification
+from notifications.notify import notify_ticket
 from .boss_ticket_utils import (
     BOSS_TEMPLATES,
     DEFAULT_TEMPLATE,
@@ -1124,6 +1126,10 @@ class EnvisionLEMStatusView(APIView):
             return Response({"error": "Give a reason for the rejection."}, status=400)
 
         lem.set_status(status, request.user, note)
+        if status == LEMReport.STATUS_APPROVED:
+            notify_ticket(lem, request.user, Notification.TICKET_APPROVED)
+        elif status == LEMReport.STATUS_REJECTED:
+            notify_ticket(lem, request.user, Notification.TICKET_REJECTED, note)
         return Response({"lem_number": lem.lem_number, "display_number": lem.ticket_number, **_lem_status_fields(lem)})
 
 
@@ -1205,6 +1211,7 @@ class EnvisionFieldTicketEntriesView(APIView):
                         "asset_id": str(u.asset_id),
                         "name": u.asset.name,
                         "charge_type": u.asset.charge_type,
+                        "is_equipment": u.asset.is_equipment,
                         "quantity_used": str(u.quantity_used) if u.quantity_used is not None else None,
                     }
                     for u in e.asset_usages.all()
@@ -1396,6 +1403,7 @@ class EnvisionFieldTicketReviseView(APIView):
         )
         # A revision is a resubmission: it goes back to the consultant / contractor as pending.
         lem.set_status(LEMReport.STATUS_PENDING, request.user, f"Resubmitted as revision R{new_revision:02d}")
+        notify_ticket(lem, request.user, Notification.TICKET_UPDATED)
 
         response = FileResponse(
             pdf_buffer,
@@ -1872,6 +1880,7 @@ class EnvisionLEMInvoiceView(APIView):
                 lem.save(update_fields=["invoiced_on", "invoice_number", "invoiced_by"])
                 lem.set_status(LEMReport.STATUS_INVOICED, request.user, f"Invoice {invoice_number}")
                 lem.time_entries.update(is_locked=True)
+                notify_ticket(lem, request.user, Notification.TICKET_INVOICED)
         return Response({
             "updated": [lem.ticket_number for lem in lems],
             "invoice_number": invoice_number,

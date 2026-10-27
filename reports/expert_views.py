@@ -12,12 +12,13 @@ Filters (query string): workspace, date_from, date_to (YYYY-MM-DD, Mountain Time
 
 Money comes from the rate sheet (Rates page). Every rate or equipment item charged on a time entry (AssetUsage) is
 billed at the item's rate (usage.cost) and costs the company the item's cost (OrganizationAsset.cost_rate: the
-employee's wages for a crew rate such as OPFC, the running cost for equipment) times the same quantity. Rate minus
-cost is the margin.
+employee's wages for a crew rate such as OPFC, the running cost for equipment) times the same quantity. Hourly crew
+rates carry the overtime / double-time premium on both sides (billed and wages). Rate minus cost is the margin.
 
-Overtime (no double time): a person's hours over 8 in a day or 44 in a Sunday-Saturday week. It is worked out on
-everything the person logged that week (approved time only when `approved` is set), whichever job it was on, so a
-job filter never moves where overtime starts.
+Regular / overtime / double time follow the pay rules (core.utils.pay_rules): the first 8 hours of a person's day
+are regular, the rest overtime at 1.5x; on a stat holiday the first 8 are overtime and the rest double time at 2x.
+Each day counts everything the person logged that day, whichever job it was on, so a job filter never moves where
+overtime starts.
 """
 
 import io
@@ -36,6 +37,7 @@ from approvals.models import TimeEntryApproval
 from approvals.utils import get_week_bounds
 from clients.models import Client
 from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
+from core.utils import pay_rules
 from projects.models import Project
 from time_entries.models import TimeEntry
 from workspaces.models import WorkspaceMember
@@ -43,8 +45,6 @@ from workspaces.permissions import ADMIN_ONLY, MANAGE_ROLES, has_workspace_role
 
 from .models import LEMReport
 
-DAILY_ST_HOURS = Decimal("8")
-WEEKLY_ST_HOURS = Decimal("44")
 FIELD_TICKET_PREFIX = "FTF-"
 TICKET_STATUSES = ("approved", "invoiced", "pending", "rejected")
 ZERO = Decimal("0")
@@ -97,9 +97,18 @@ def usage_quantity(usage, entry):
 
 
 def usage_cost(usage, entry):
-    """What the charge costs the company (cost rate x quantity), or None when the item has no cost yet."""
-    rate = usage.asset.cost_rate
-    return None if rate is None else Decimal(rate) * usage_quantity(usage, entry)
+    """What the charge costs the company (cost rate x quantity), or None when the item has no cost yet. An hourly
+    crew rate billed with an overtime / double-time premium costs the same premium in wages."""
+    asset = usage.asset
+    if asset.cost_rate is None:
+        return None
+    quantity = usage_quantity(usage, entry)
+    cost = Decimal(asset.cost_rate) * quantity
+    if asset.charge_type == "hourly" and asset.is_equipment is False:
+        base = Decimal(asset.hourly_rate or 0) * quantity
+        if base:
+            cost *= Decimal(usage.cost or 0) / base
+    return cost
 
 
 class Filters:
@@ -166,30 +175,15 @@ class Filters:
         return qs.select_related("user", "project__client", "job_title", "task").prefetch_related("asset_usages__asset")
 
     def split(self, entries):
-        """{entry id: (straight hours, overtime hours)} for `entries`, counting every hour their people logged
-        from the start of the first week, on any job, toward the 8 h / 44 h limits."""
+        """{entry id: pay_rules.Split} for `entries`: each person's day counts everything they logged that day
+        (approved time only when `approved` is set), on any job."""
         users = {e.user_id for e in entries}
         if not users:
             return {}
-        week_start = get_week_bounds(self.date_from)[0]
-        everything = (
-            self._base_entries(week_start, self.date_to, users)
-            .only("id", "user_id", "start_time", "duration")
-            .order_by("user_id", "start_time", "id")
+        everything = list(
+            self._base_entries(self.date_from, self.date_to, users).only("id", "user_id", "workspace_id", "start_time", "duration")
         )
-        daily = defaultdict(lambda: ZERO)
-        weekly = defaultdict(lambda: ZERO)
-        result = {}
-        for entry in everything:
-            day = utc_to_envision_local(entry.start_time).date()
-            week = get_week_bounds(day)[0]
-            hours = Decimal(entry.duration) / 60
-            straight = min(hours, max(DAILY_ST_HOURS - daily[(entry.user_id, day)], ZERO))
-            straight = min(straight, max(WEEKLY_ST_HOURS - weekly[(entry.user_id, week)], ZERO))
-            daily[(entry.user_id, day)] += straight
-            weekly[(entry.user_id, week)] += straight
-            result[entry.id] = (straight, hours - straight)
-        return result
+        return pay_rules.split_entries(entries, context=everything)
 
     # ── field tickets ────────────────────────────────────────────────────
     def tickets(self):
@@ -452,24 +446,25 @@ class ExpertProfitabilityView(_ExpertView):
 
 
 def payroll_data(filters):
-    """Rows of hours per employee per day for the period, straight time / overtime."""
+    """Rows of hours per employee per day for the period: straight time, overtime (1.5x) and double time (2x)."""
     entries = list(filters.entries(use_work=False))
     split = filters.split(entries)
     days = [filters.date_from + timedelta(days=i) for i in range((filters.date_to - filters.date_from).days + 1)]
     rows = {}
     for entry in entries:
         hours = Decimal(entry.duration) / 60
-        straight, overtime = split.get(entry.id, (hours, ZERO))
+        pay = split.get(entry.id) or pay_rules.Split(rt=hours)
         day = utc_to_envision_local(entry.start_time).date()
         row = rows.setdefault(entry.user_id, {
             "user_id": str(entry.user_id),
             "name": entry.user.get_full_name() or entry.user.email,
             "titles": defaultdict(lambda: ZERO),
-            "days": defaultdict(lambda: {"st": ZERO, "ot": ZERO, "jobs": set()}),
+            "days": defaultdict(lambda: {"st": ZERO, "ot": ZERO, "dt": ZERO, "jobs": set()}),
         })
         cell = row["days"][day]
-        cell["st"] += straight
-        cell["ot"] += overtime
+        cell["st"] += pay.rt
+        cell["ot"] += pay.ot
+        cell["dt"] += pay.dt
         if entry.project:
             cell["jobs"].add(entry.project.job_code or entry.project.name)
         row["titles"][entry.job_title.name if entry.job_title else ""] += hours
@@ -478,17 +473,18 @@ def payroll_data(filters):
     for row in sorted(rows.values(), key=lambda r: r["name"]):
         st = sum((c["st"] for c in row["days"].values()), ZERO)
         ot = sum((c["ot"] for c in row["days"].values()), ZERO)
+        dt = sum((c["dt"] for c in row["days"].values()), ZERO)
         out.append({
             "user_id": row["user_id"],
             "name": row["name"],
             "job_title": max(row["titles"].items(), key=lambda kv: kv[1])[0] if row["titles"] else "",
             "days": [
                 {"date": day, "st": _hours(row["days"][day]["st"]), "ot": _hours(row["days"][day]["ot"]),
-                 "jobs": sorted(row["days"][day]["jobs"])}
-                if day in row["days"] else {"date": day, "st": 0, "ot": 0, "jobs": []}
+                 "dt": _hours(row["days"][day]["dt"]), "jobs": sorted(row["days"][day]["jobs"])}
+                if day in row["days"] else {"date": day, "st": 0, "ot": 0, "dt": 0, "jobs": []}
                 for day in days
             ],
-            "st_hours": _hours(st), "ot_hours": _hours(ot), "total_hours": _hours(st + ot),
+            "st_hours": _hours(st), "ot_hours": _hours(ot), "dt_hours": _hours(dt), "total_hours": _hours(st + ot + dt),
         })
 
     pending = {"entries": 0, "hours": 0}
@@ -504,11 +500,22 @@ def payroll_data(filters):
         "totals": {
             "st_hours": _hours(sum(r["st_hours"] for r in out)),
             "ot_hours": _hours(sum(r["ot_hours"] for r in out)),
+            "dt_hours": _hours(sum(r["dt_hours"] for r in out)),
             "total_hours": _hours(sum(r["total_hours"] for r in out)),
             "employees": len(out),
         },
         "not_approved": pending,
-        "rules": {"daily_st_hours": float(DAILY_ST_HOURS), "weekly_st_hours": float(WEEKLY_ST_HOURS)},
+        "rules": {
+            "daily_st_hours": float(pay_rules.DAILY_RT_HOURS),
+            "ot_multiplier": float(pay_rules.OT_MULTIPLIER),
+            "dt_multiplier": float(pay_rules.DT_MULTIPLIER),
+            "stat_holidays": [
+                {"date": day, "name": name}
+                for day, name in sorted(pay_rules.stat_holidays(
+                    range(filters.date_from.year, filters.date_to.year + 1), filters.workspace_id).items())
+                if filters.date_from <= day <= filters.date_to
+            ],
+        },
     }
 
 
@@ -528,17 +535,21 @@ class ExpertPayrollExportView(_ExpertView):
         book = Workbook()
         daily = book.active
         daily.title = "Daily hours"
-        daily.append(["Employee", "Job title", "Date", "Jobs", "Straight time", "Overtime", "Total"])
+        holidays = {h["date"]: h["name"] for h in data["rules"]["stat_holidays"]}
+        daily.append(["Employee", "Job title", "Date", "Stat holiday", "Jobs", "Straight time", "Overtime (1.5x)",
+                      "Double time (2x)", "Total"])
         for row in data["rows"]:
             for day in row["days"]:
-                if day["st"] or day["ot"]:
-                    daily.append([row["name"], row["job_title"], day["date"], ", ".join(day["jobs"]),
-                                  day["st"], day["ot"], round(day["st"] + day["ot"], 2)])
+                if day["st"] or day["ot"] or day["dt"]:
+                    daily.append([row["name"], row["job_title"], day["date"], holidays.get(day["date"], ""),
+                                  ", ".join(day["jobs"]), day["st"], day["ot"], day["dt"],
+                                  round(day["st"] + day["ot"] + day["dt"], 2)])
         totals = book.create_sheet("Totals")
-        totals.append(["Employee", "Job title", "Straight time", "Overtime", "Total"])
+        totals.append(["Employee", "Job title", "Straight time", "Overtime (1.5x)", "Double time (2x)", "Total"])
         for row in data["rows"]:
-            totals.append([row["name"], row["job_title"], row["st_hours"], row["ot_hours"], row["total_hours"]])
-        totals.append(["All employees", "", data["totals"]["st_hours"], data["totals"]["ot_hours"], data["totals"]["total_hours"]])
+            totals.append([row["name"], row["job_title"], row["st_hours"], row["ot_hours"], row["dt_hours"], row["total_hours"]])
+        totals.append(["All employees", "", data["totals"]["st_hours"], data["totals"]["ot_hours"],
+                       data["totals"]["dt_hours"], data["totals"]["total_hours"]])
         for sheet in (daily, totals):
             for cell in sheet[1]:
                 cell.font = Font(bold=True)

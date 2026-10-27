@@ -13,6 +13,7 @@ from decimal import Decimal
 from django.utils import timezone
 
 from core.utils.envision_time import utc_to_envision_local
+from core.utils.pay_rules import split_entries
 
 from .models import TimeEntryApprovalItem
 from .utils import calculate_rt_ot_and_cost
@@ -91,7 +92,7 @@ def _usage_lines(entry, billable):
     return lines
 
 
-def _entry_detail(item, ticket_numbers):
+def _entry_detail(item, ticket_numbers, split=None):
     entry = item.time_entry
     start = utc_to_envision_local(entry.start_time)
     end = utc_to_envision_local(entry.end_time) if entry.end_time else None
@@ -122,6 +123,11 @@ def _entry_detail(item, ticket_numbers):
         "meals": entry.meals,
         "hotels": entry.hotels,
         "source": ticket_numbers.get(entry.id) or "",
+        # Regular / overtime (1.5x) / double time (2x) hours by the pay rules (core.utils.pay_rules).
+        "rt_hours": _money(split.rt) if split else None,
+        "ot_hours": _money(split.ot) if split else None,
+        "dt_hours": _money(split.dt) if split else None,
+        "stat_holiday": split.holiday_name if split else "",
         "lines": lines,
         "lines_total": _money(sum(line["amount"] or 0 for line in lines)) if billable else None,
     }
@@ -144,12 +150,13 @@ def week_detail(approval):
             ticket_numbers[item.time_entry_id] = tickets[0].ticket_number
 
     summary = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
-    day_hours = defaultdict(lambda: {"total": Decimal(0), "rt": Decimal(0), "ot": Decimal(0)})
+    day_hours = defaultdict(lambda: {"total": Decimal(0), "rt": Decimal(0), "ot": Decimal(0), "dt": Decimal(0)})
     for (day, _project), bucket in summary["breakdown"].items():
-        for key in ("total", "rt", "ot"):
+        for key in ("total", "rt", "ot", "dt"):
             day_hours[str(day)][key] += bucket[key]
 
-    entries = [_entry_detail(item, ticket_numbers) for item in items]
+    splits = split_entries([item.time_entry for item in items])
+    entries = [_entry_detail(item, ticket_numbers, splits.get(item.time_entry_id)) for item in items]
     days = defaultdict(list)
     for entry in entries:
         days[entry["date"]].append(entry)
@@ -162,6 +169,8 @@ def week_detail(approval):
             "hours": _money(sum(e["hours"] for e in day_entries)),
             "rt_hours": _money(hours["rt"]) if hours else None,
             "ot_hours": _money(hours["ot"]) if hours else None,
+            "dt_hours": _money(hours["dt"]) if hours else None,
+            "stat_holiday": next((e["stat_holiday"] for e in day_entries if e["stat_holiday"]), ""),
             "labour_cost": _money(sum(e["labour_cost"] or 0 for e in day_entries)),
             "lines_total": _money(sum(e["lines_total"] or 0 for e in day_entries)),
             "non_billable": all(not e["billable"] for e in day_entries),
@@ -177,6 +186,7 @@ def week_detail(approval):
             "total_hours": summary["total_hours"],
             "regular_hours": summary["rt_hours"],
             "overtime_hours": summary["ot_hours"],
+            "double_time_hours": summary["dt_hours"],
             "total_cost": summary["total_cost"],
             "labour_cost": summary["total_cost"],
             "lines_total": _money(lines_total),

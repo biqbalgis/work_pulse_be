@@ -52,6 +52,9 @@ urlpatterns = [
 
     # User Permissions
     path("api/", include("user_permissions.urls")),
+
+    # Notifications (the bell)
+    path("api/", include("notifications.urls")),
 ]
 
 if settings.DEBUG:

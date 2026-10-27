@@ -11,12 +11,13 @@ from collections import OrderedDict
 from datetime import date as date_cls
 from decimal import Decimal
 
+from core.utils.pay_rules import DAILY_RT_HOURS, split_entries
 from .cost_sheet_pdf_utils import generate_cost_sheet_pdf
 from .daily_ticket_pdf_utils import generate_daily_ticket_pdf
 from .models import DailyTicketDownload
 
-# Each person's hours on a ticket: the first RT_HOURS_PER_DAY are regular time, the rest overtime.
-RT_HOURS_PER_DAY = Decimal("8")
+# Tickets issued before the pay rules (snapshots without a split): the first 8 hours were regular time.
+RT_HOURS_PER_DAY = DAILY_RT_HOURS
 
 BOSS_TEMPLATES = {
     DailyTicketDownload.DAILY_TICKET: (generate_daily_ticket_pdf, "Daily_Ticket"),
@@ -37,7 +38,7 @@ def _hours(value):
     return f"{value.normalize():f}" if value == value.to_integral() else f"{value:.2f}".rstrip("0")
 
 
-def _add_rate_usage(rates, usage, entry):
+def _add_rate_usage(rates, usage, entry, split):
     asset = usage.asset
     person = entry.user.get_full_name() or entry.user.email
     hourly = asset.charge_type == "hourly"
@@ -47,12 +48,22 @@ def _add_rate_usage(rates, usage, entry):
         "hourly": hourly,
         "rate": Decimal((asset.hourly_rate if hourly else asset.quantity_rate) or 0),
         "quantity": Decimal("0"),
+        "rt": Decimal("0"),
+        "ot": Decimal("0"),
+        "dt": Decimal("0"),
         "amount": Decimal("0"),
     })
     if usage.quantity_used is not None:
-        row["quantity"] += Decimal(usage.quantity_used)
+        quantity = Decimal(usage.quantity_used)
     elif hourly:
-        row["quantity"] += Decimal(entry.duration) / 60
+        quantity = Decimal(entry.duration) / 60
+    else:
+        quantity = Decimal("0")
+    row["quantity"] += quantity
+    if hourly and split.total:
+        # A crew rate's hours fall in the same regular / overtime / double-time shares as its person's time.
+        for key in ("rt", "ot", "dt"):
+            row[key] += quantity * getattr(split, key) / split.total
     row["amount"] += Decimal(usage.cost or 0)
 
 
@@ -62,8 +73,10 @@ def build_boss_ticket_data(entries, project, task, prepared_by=None):
     entries = list(entries)
     pm_info = project.pm_info or {}
     task_name = task.name if task else ""
+    # Regular / overtime / double time per entry by the pay rules (each person's whole day counts).
+    splits = split_entries(entries)
 
-    # ── Labour: one row per person + job title, RT/OT split per person ───
+    # ── Labour: one row per person + job title, RT/OT/DT by the pay rules ───
     labour = OrderedDict()
     for entry in entries:
         key = (entry.user_id, entry.job_title_id)
@@ -72,26 +85,26 @@ def build_boss_ticket_data(entries, project, task, prepared_by=None):
             "name": entry.user.get_full_name() or entry.user.email,
             "classification": entry.job_title.name if entry.job_title else "",
             "hours": Decimal("0"),
+            "rt": Decimal("0"),
+            "ot": Decimal("0"),
+            "dt": Decimal("0"),
             "rate": None,
             "amount": Decimal("0"),
             "meals": False,
             "hotel": False,
         })
         row["hours"] += Decimal(entry.duration) / 60
+        for part in ("rt", "ot", "dt"):
+            row[part] += getattr(splits[entry.id], part)
         row["amount"] += Decimal(entry.cost or 0)
         if row["rate"] is None and entry.hourly_rate is not None:
             row["rate"] = Decimal(entry.hourly_rate)
         row["meals"] = row["meals"] or entry.meals
         row["hotel"] = row["hotel"] or entry.hotels
 
-    rt_left = {}
     labour_rows = []
     labour_total = Decimal("0")
     for row in labour.values():
-        remaining = rt_left.setdefault(row["user_id"], RT_HOURS_PER_DAY)
-        rt = min(row["hours"], remaining)
-        rt_left[row["user_id"]] = remaining - rt
-        ot = row["hours"] - rt
         labour_total += row["amount"]
         labour_rows.append({
             "name": row["name"],
@@ -100,8 +113,9 @@ def build_boss_ticket_data(entries, project, task, prepared_by=None):
             "uom": "Hour",
             "rate": _money(row["rate"]) if row["rate"] is not None else "",
             "hours": _hours(row["hours"]),
-            "rt": _hours(rt),
-            "ot": _hours(ot),
+            "rt": _hours(row["rt"]),
+            "ot": _hours(row["ot"]),
+            "dt": _hours(row["dt"]),
             "subsistence": ", ".join(label for label, on in (("Meals", row["meals"]), ("Hotel", row["hotel"])) if on),
             "amount": _money(row["amount"]),
         })
@@ -113,7 +127,7 @@ def build_boss_ticket_data(entries, project, task, prepared_by=None):
         for usage in entry.asset_usages.all():
             asset = usage.asset
             if not asset.is_equipment:
-                _add_rate_usage(rates, usage, entry)
+                _add_rate_usage(rates, usage, entry, splits[entry.id])
                 continue
             row = equipment.setdefault(asset.id, {
                 "name": asset.name,
@@ -157,8 +171,9 @@ def build_boss_ticket_data(entries, project, task, prepared_by=None):
             "uom": "Hour" if row["hourly"] else "Qty",
             "rate": _money(row["rate"]) if row["rate"] else "",
             "hours": quantity,
-            "rt": quantity if row["hourly"] else "",
-            "ot": "",
+            "rt": _hours(row["rt"]) if row["hourly"] else "",
+            "ot": _hours(row["ot"]) if row["hourly"] else "",
+            "dt": _hours(row["dt"]) if row["hourly"] else "",
             "subsistence": "",
             "amount": _money(row["amount"]),
         })

@@ -14,6 +14,7 @@ from .serializers import TimeEntryApprovalSerializer, TimeEntryApprovalItemSeria
 from time_entries.models import TimeEntry
 from .utils import can_approve, calculate_rt_ot_and_cost
 from .review import APPROVED, REJECTED, decide_item, refresh_week_status, week_detail
+from notifications.notify import notify_entry_decision, notify_week_decision
 
 
 class ApprovalPagination(StandardPagination):
@@ -118,7 +119,8 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
             "hours": {
                 "total": metrics["total_hours"],
                 "regular": metrics["rt_hours"],
-                "overtime": metrics["ot_hours"]
+                "overtime": metrics["ot_hours"],
+                "double_time": metrics["dt_hours"],
             },
             "cost": {
                 "total": metrics["total_cost"],
@@ -231,10 +233,13 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
             return Response({"error": "You are not authorized to approve this employee's time."}, status=403)
 
         items = approval.items.filter(is_deleted=False).select_related("time_entry")
+        approved_now = 0
         for item in items:
             if item.status != REJECTED:
+                approved_now += item.status != APPROVED
                 decide_item(item, APPROVED, request.user)
         refresh_week_status(approval, request.user)
+        notify_week_decision(approval, request.user, True, approved_now)
 
         rejected = sum(1 for item in items if item.status == REJECTED)
         if rejected:
@@ -255,14 +260,17 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         if not reason:
             return Response({"error": "Give a reason so the employee knows what to fix."}, status=400)
 
+        rejected_now = 0
         for item in approval.items.filter(is_deleted=False).select_related("time_entry"):
             ticket = item.time_entry.field_ticket()
             if item.status != APPROVED and not (ticket and ticket.status == "invoiced"):
                 decide_item(item, REJECTED, request.user, reason)
+                rejected_now += 1
         approval.status = "rejected"
         approval.notes = reason
         approval.reviewed_by = request.user
         approval.save(update_fields=["status", "notes", "reviewed_by"])
+        notify_week_decision(approval, request.user, False, rejected_now, reason)
 
         return Response({"message": "Week rejected. The employee can fix the entries and resubmit them."})
 
@@ -286,6 +294,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
 
         decide_item(item, APPROVED, request.user)
         refresh_week_status(approval, request.user)
+        notify_entry_decision(item, request.user, True)
         return Response({"message": "Entry approved.", "week_status": approval.status})
 
     @action(detail=True, methods=["post"], url_path="items/(?P<item_id>[^/.]+)/reject")
@@ -306,6 +315,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
 
         decide_item(item, REJECTED, request.user, reason)
         refresh_week_status(approval, request.user)
+        notify_entry_decision(item, request.user, False, reason)
         return Response({"message": "Entry rejected. The employee can fix it and resubmit.", "week_status": approval.status})
 
     # ========== DETAIL VIEW WITH DAILY BREAKDOWN ==========
@@ -316,7 +326,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         from collections import defaultdict
 
         # 🌐 Overall summary + per-(date, project) breakdown.
-        # RT/OT logic is policy-aware (standard vs envision) inside the helper.
+        # Regular / overtime / double time by the pay rules (core.utils.pay_rules).
         summary = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
 
         # 📆 Regroup breakdown by date for the response
@@ -327,6 +337,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
                 "hours_total": round(float(data["total"]), 2),
                 "rt_hours":    round(float(data["rt"]),    2),
                 "ot_hours":    round(float(data["ot"]),    2),
+                "dt_hours":    round(float(data["dt"]),    2),
                 "cost":        round(float(data["cost"]),  2),
             })
 
@@ -351,6 +362,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
                 "total_hours": summary["total_hours"],
                 "regular_hours": summary["rt_hours"],
                 "overtime_hours": summary["ot_hours"],
+                "double_time_hours": summary["dt_hours"],
                 "total_cost": summary["total_cost"]
             },
             "daily_breakdown": formatted_days,
