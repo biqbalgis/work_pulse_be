@@ -114,7 +114,9 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+# Every time in the app is Alberta (Mountain) time, whoever enters it and wherever they are: MST in winter,
+# MDT in summer. Times are stored in UTC; dates, days and times given without an offset are Mountain time.
+TIME_ZONE = 'America/Edmonton'
 # TIME_ZONE = 'America/Vancouver'
 USE_I18N = True
 USE_TZ = True

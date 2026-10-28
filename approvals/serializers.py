@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import serializers
 from .models import TimeEntryApproval, TimeEntryApprovalItem
 
@@ -14,7 +15,7 @@ class TimeEntryApprovalItemSerializer(serializers.ModelSerializer):
             "duration_hours": t.duration / 60,
             "description": t.description,
             "project": t.project.name if t.project else None,
-            "date": t.start_time.date(),
+            "date": timezone.localtime(t.start_time).date(),
         }
 
 class TimeEntryApprovalSerializer(serializers.ModelSerializer):

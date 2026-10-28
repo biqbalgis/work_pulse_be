@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from django.utils import timezone
 from django.db.models import Case, CharField, F, Prefetch, Value, When, prefetch_related_objects
 from rest_framework import filters, viewsets, status
 from rest_framework.decorators import action
@@ -207,7 +208,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
                 approved=True,  # default as pending approval
                 created_by=user
             )
-            submitted_dates.add(e.start_time.date())
+            submitted_dates.add(timezone.localtime(e.start_time).date())
             total_minutes += e.duration
 
         # 4) Save total hours on parent approval record

@@ -213,7 +213,7 @@ class DailyRTOTReport(APIView):
         # 6) Get descriptions grouped by user + date
         desc_lookup = {}
         for t in base_query:
-            key = (t.start_time.date(), t.user_id)
+            key = (timezone.localtime(t.start_time).date(), t.user_id)
             desc_lookup.setdefault(key, [])
             if t.description:
                 desc_lookup[key].append(t.description)
@@ -329,7 +329,7 @@ class EmployeePayrollDashboard(APIView):
         end = request.GET.get("end")
 
         # If no custom dates, auto-detect current week/month
-        today = datetime.utcnow().date()
+        today = timezone.localdate()
 
         if not start or not end:
             if period == "month":
@@ -408,7 +408,7 @@ class DailyWorkReportView(APIView):
         # 6) Get descriptions grouped by user + date
         desc_lookup = {}
         for t in base_query:
-            key = (t.start_time.date(), t.user_id)
+            key = (timezone.localtime(t.start_time).date(), t.user_id)
             desc_lookup.setdefault(key, [])
             if t.description:
                 desc_lookup[key].append(t.description)
@@ -523,7 +523,7 @@ class EmployeePayrollDashboard(APIView):
         end = request.GET.get("end")
 
         # If no custom dates, auto-detect current week/month
-        today = datetime.utcnow().date()
+        today = timezone.localdate()
 
         if not start or not end:
             if period == "month":
@@ -633,7 +633,7 @@ class DailyWorkReportView(APIView):
         # Group entries by date
         entries_by_date = {}
         for entry in time_entries:
-            d_str = str(entry.start_time.date())
+            d_str = str(timezone.localtime(entry.start_time).date())
             if d_str not in entries_by_date:
                 entries_by_date[d_str] = []
             entries_by_date[d_str].append(entry)
@@ -844,7 +844,7 @@ class LEMReportGenerationView(APIView):
 
         entries_by_date = {}
         for entry in all_time_entries:
-            d = entry.start_time.date()
+            d = timezone.localtime(entry.start_time).date()
             if d not in entries_by_date:
                 entries_by_date[d] = []
             entries_by_date[d].append(entry)

@@ -192,7 +192,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         # -------------  ✓ END OF ASSET BLOCK --------------
 
         # -------------  NEW AUTO-APPROVAL CODE --------------
-        entry_date = time_entry.start_time.date()
+        entry_date = timezone.localtime(time_entry.start_time).date()  # Mountain-time day
         start_week, end_week = get_week_bounds(entry_date)
 
         approval, created = TimeEntryApproval.objects.get_or_create(
@@ -291,8 +291,8 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
                 usage.cost = usage.calculate_cost(duration_hours_decimal)
                 usage.save()
 
-        old_week = get_week_bounds(old_start_time.date())
-        new_week = get_week_bounds(updated_entry.start_time.date())
+        old_week = get_week_bounds(timezone.localtime(old_start_time).date())
+        new_week = get_week_bounds(timezone.localtime(updated_entry.start_time).date())
 
         if old_week != new_week:
             old_approval = (

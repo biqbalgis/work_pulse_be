@@ -57,7 +57,7 @@ def _resolve_date_range(request):
         except ValueError:
             raise ValidationError({"date_from": "Use YYYY-MM-DD."})
         return start, end
-    return get_week_bounds(timezone.now().date())
+    return get_week_bounds(timezone.localdate())
 
 
 def _month_bounds(today):
@@ -78,7 +78,7 @@ class DashboardSummaryView(APIView):
     def get(self, request):
         user = request.user
         workspace_ids = _resolve_workspace_ids(request)
-        start, end = get_week_bounds(timezone.now().date())
+        start, end = get_week_bounds(timezone.localdate())
 
         is_admin = user.is_superuser or WorkspaceMember.objects.filter(
             user=user, workspace_id__in=workspace_ids, is_deleted=False, role__in=["admin", "manager"],
@@ -137,7 +137,7 @@ class DashboardSummaryView(APIView):
         for m in inactive_members:
             last_start = last_entry_by_user.get(m.user_id)
             if last_start:
-                days = (timezone.now().date() - last_start.date()).days
+                days = (timezone.localdate() - timezone.localtime(last_start).date()).days
                 status = f"No entries in {days} days"
             else:
                 status = "Never logged time"
@@ -329,7 +329,7 @@ class DashboardMyHoursByProjectView(APIView):
 
     def get(self, request):
         period = request.GET.get("period", "week")
-        today = timezone.now().date()
+        today = timezone.localdate()
         if period == "month":
             start, end = _month_bounds(today)
         else:
@@ -363,7 +363,7 @@ class DashboardMyHoursByTaskView(APIView):
         if not project_id:
             raise ValidationError({"project": "This field is required."})
 
-        today = timezone.now().date()
+        today = timezone.localdate()
         start, end = _month_bounds(today)
 
         rows = (
