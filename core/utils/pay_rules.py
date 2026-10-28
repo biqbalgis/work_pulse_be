@@ -11,10 +11,16 @@ are Alberta's statutory holidays plus any the workspace adds (workspaces.Holiday
 
 The premiums apply to what people are paid (labour cost) and to what clients are billed for labour: the entry's
 labour amount and hourly crew rates (OPFC, Supervisor Rate...). Equipment and per-unit items stay at their flat rate.
+
+Two views of a day:
+  * Pay (payroll, approvals hours, reports): a person's whole day, every job and ticket together.
+  * A field ticket (its PDF and what it bills, the stored amounts): only that ticket's own rows, exactly as the
+    form showed them, so another ticket or timesheet entry that day never changes it (split_entries(per_ticket=True)).
+    Time not on a ticket is priced from the day's other off-ticket time.
 """
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
 
@@ -109,10 +115,22 @@ def split_day(entries, holiday_name=None):
     return result
 
 
-def split_entries(entries, context=None):
+def ticket_of(entry_ids):
+    """{time entry id: id of the live field ticket it's on} for those entries (entries on none are left out)."""
+    from reports.models import LEMReport
+
+    links = LEMReport.time_entries.through.objects.filter(
+        timeentry_id__in=list(entry_ids), lemreport__is_deleted=False,
+    ).values_list("timeentry_id", "lemreport_id")
+    return dict(links)
+
+
+def split_entries(entries, context=None, per_ticket=False):
     """{entry id: Split} for `entries`. Each person's day is worked out from all their (live) entries that day,
     so an entry on another job earlier in the day moves where overtime starts. Pass `context` (entries already
-    loaded that cover those whole days) to skip the extra query."""
+    loaded that cover those whole days) to skip the extra query, or the entries themselves to split only among
+    them. per_ticket=True splits each field ticket's rows on their own (and off-ticket time among itself): what
+    a ticket shows and bills."""
     from time_entries.models import TimeEntry
 
     entries = list(entries)
@@ -128,11 +146,11 @@ def split_entries(entries, context=None):
             user_id__in=users, is_deleted=False,
             start_time__date__gte=min(dates) - timedelta(days=1), start_time__date__lte=max(dates) + timedelta(days=1),
         ).only("id", "user_id", "workspace_id", "start_time", "duration")
+    pool = {e.id: e for e in list(context) + entries if (e.user_id, entry_day(e)) in days}
+    tickets = ticket_of(pool) if per_ticket else {}
     grouped = defaultdict(list)
-    for entry in list(context) + entries:
-        key = (entry.user_id, entry_day(entry))
-        if key in days and all(e.id != entry.id for e in grouped[key]):
-            grouped[key].append(entry)
+    for entry in pool.values():
+        grouped[(entry.user_id, entry_day(entry), tickets.get(entry.id))].append(entry)
 
     workspace_by_user = {e.user_id: e.workspace_id for e in entries}
     holidays = {}
@@ -141,7 +159,7 @@ def split_entries(entries, context=None):
         holidays[user_id] = stat_holidays(years, workspace_by_user.get(user_id))
 
     result = {}
-    for (user_id, day), day_entries in grouped.items():
+    for (user_id, day, _ticket), day_entries in grouped.items():
         result.update(split_day(day_entries, holidays[user_id].get(day)))
     return {e.id: result[e.id] for e in entries}
 
@@ -173,8 +191,9 @@ def usage_amount(usage, entry, split):
 
 def reprice_days(user_days):
     """Recompute the labour amount and asset usage amounts of every entry on these (user id, date) days, after
-    time was added, changed or removed. Entries on an invoiced field ticket keep what was invoiced. Uses
-    queryset updates, so it doesn't re-trigger itself."""
+    time was added, changed or removed. Each field ticket is priced from its own rows only (see split_entries
+    per_ticket). Entries on an invoiced field ticket keep what was invoiced. Uses queryset updates, so it doesn't
+    re-trigger itself."""
     from datetime import timedelta
 
     from organization_asset.models import AssetUsage
@@ -192,7 +211,7 @@ def reprice_days(user_days):
         .prefetch_related("asset_usages__asset", "lem_reports")
     )
     entries = [e for e in candidates if (e.user_id, entry_day(e)) in user_days]
-    splits = split_entries(entries, context=entries)
+    splits = split_entries(entries, context=entries, per_ticket=True)
     for entry in entries:
         if any(lem.status == "invoiced" and not lem.is_deleted for lem in entry.lem_reports.all()):
             continue

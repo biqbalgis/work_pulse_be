@@ -61,25 +61,28 @@ def calculate_rt_ot_and_cost(approval_items, workspace=None):
     """
     Regular / overtime / double-time hours and labour cost for a set of TimeEntryApprovalItem, by the pay rules
     in core.utils.pay_rules (first 8 h of a day regular, the rest overtime at 1.5x; on a stat holiday the first
-    8 h overtime and the rest double time at 2x). Each person's whole day counts, entries outside this set
-    included. Labour cost is the entry's hourly rate with those premiums; non-billable time costs nothing here.
+    8 h overtime and the rest double time at 2x). Hours count each person's whole day, entries outside this set
+    included. Labour cost is what the time bills: the entry's hourly rate with the premiums of its own field
+    ticket (each ticket priced on its own rows, as stored); non-billable time costs nothing here.
 
     `workspace` is accepted for older callers and no longer changes anything.
     Returns totals plus a per-(date, project_name) breakdown dict.
     """
     items = list(approval_items)
     splits = split_entries([item.time_entry for item in items])
+    billed = split_entries([item.time_entry for item in items], per_ticket=True)
     breakdown = defaultdict(_new_breakdown_bucket)
     totals = defaultdict(Decimal)
 
     for item in items:
         entry = item.time_entry
         split = splits[entry.id]
+        bill = billed[entry.id]
         hourly = Decimal(entry.hourly_rate or 0) if entry.is_billable_to_client else Decimal("0")
         costs = {
-            "rt_cost": hourly * split.rt,
-            "ot_cost": hourly * OT_MULTIPLIER * split.ot,
-            "dt_cost": hourly * DT_MULTIPLIER * split.dt,
+            "rt_cost": hourly * bill.rt,
+            "ot_cost": hourly * OT_MULTIPLIER * bill.ot,
+            "dt_cost": hourly * DT_MULTIPLIER * bill.dt,
         }
         bucket = breakdown[(entry_day(entry), entry.project.name if entry.project else None)]
         bucket["total"] += split.total

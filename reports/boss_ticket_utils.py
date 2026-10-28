@@ -12,6 +12,7 @@ from datetime import date as date_cls
 from decimal import Decimal
 
 from core.utils.pay_rules import DAILY_RT_HOURS, split_entries
+from projects.role_utils import DEFAULT_JOB_TITLE_NAME
 from .cost_sheet_pdf_utils import generate_cost_sheet_pdf
 from .daily_ticket_pdf_utils import generate_daily_ticket_pdf
 from .models import DailyTicketDownload
@@ -73,8 +74,9 @@ def build_boss_ticket_data(entries, project, task, prepared_by=None):
     entries = list(entries)
     pm_info = project.pm_info or {}
     task_name = task.name if task else ""
-    # Regular / overtime / double time per entry by the pay rules (each person's whole day counts).
-    splits = split_entries(entries)
+    # Regular / overtime / double time per entry by the pay rules, from this ticket's own rows only: what the form
+    # showed. Other tickets or timesheet time that day never change what this ticket prints.
+    splits = split_entries(entries, context=entries)
 
     # ── Labour: one row per person + job title, RT/OT/DT by the pay rules ───
     labour = OrderedDict()
@@ -83,7 +85,8 @@ def build_boss_ticket_data(entries, project, task, prepared_by=None):
         row = labour.setdefault(key, {
             "user_id": entry.user_id,
             "name": entry.user.get_full_name() or entry.user.email,
-            "classification": entry.job_title.name if entry.job_title else "",
+            # The placeholder job title time gets when none was chosen isn't a classification anyone entered.
+            "classification": entry.job_title.name if entry.job_title and entry.job_title.name != DEFAULT_JOB_TITLE_NAME else "",
             "hours": Decimal("0"),
             "rt": Decimal("0"),
             "ot": Decimal("0"),
@@ -117,7 +120,8 @@ def build_boss_ticket_data(entries, project, task, prepared_by=None):
             "ot": _hours(row["ot"]),
             "dt": _hours(row["dt"]),
             "subsistence": ", ".join(label for label, on in (("Meals", row["meals"]), ("Hotel", row["hotel"])) if on),
-            "amount": _money(row["amount"]),
+            # No labour rate (the person is billed through their crew rates): no labour amount either.
+            "amount": _money(row["amount"]) if row["rate"] is not None else "",
         })
 
     # ── Equipment: one row per asset ─────────────────────────────────────

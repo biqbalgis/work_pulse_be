@@ -44,6 +44,7 @@ from .models import LEMReport, LEMRevision, LEMStatusEvent, format_display_numbe
 from user_permissions.models import UserPermission
 from notifications.models import Notification
 from notifications.notify import notify_ticket
+from core.utils.pay_rules import entry_day, reprice_days
 from .boss_ticket_utils import (
     BOSS_TEMPLATES,
     DEFAULT_TEMPLATE,
@@ -475,9 +476,6 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
         pm_phone      = pm_info.get("phone", "")
         address_lines = _address_to_lines(workspace.address or "")
 
-        labour_rows, equipment_rows, total_cost = _build_field_ticket_labour_and_equipment(entries)
-        work_description = _merge_entry_descriptions(entries)
-
         date_str = entry_date.strftime("%Y-%m-%d")
 
         # Always a brand-new LEM in this endpoint's OWN "FTF-" number series —
@@ -503,6 +501,16 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
             report_data={},
         )
         lem_report.save()
+
+        # The ticket is exactly this submission: link its entries and price them as this ticket (its own rows
+        # only, see core.utils.pay_rules) before anything is built from them, so time already on another ticket or
+        # the timesheet that day never shows up in, or changes, this one.
+        lem_report.time_entries.set(created_entry_ids)
+        reprice_days({(e.user_id, entry_day(e)) for e in entries})
+        entries = entries.all()  # fresh: the amounts just repriced
+
+        labour_rows, equipment_rows, total_cost = _build_field_ticket_labour_and_equipment(entries)
+        work_description = _merge_entry_descriptions(entries)
 
         ft_display_number = lem_report.lem_number.replace(self.FTF_DB_PREFIX, "")
 
@@ -1350,6 +1358,12 @@ class EnvisionFieldTicketReviseView(APIView):
             else:
                 approval.delete()
 
+        # The revision is exactly these rows: link them and price them as this ticket before building from them.
+        lem.time_entries.set(final_ids)
+        reprice_days({
+            (e.user_id, entry_day(e))
+            for e in TimeEntry.objects.filter(id__in=final_ids).only("user_id", "start_time")
+        })
         entries = list(
             TimeEntry.objects.filter(id__in=final_ids)
             .select_related("user", "job_title")
