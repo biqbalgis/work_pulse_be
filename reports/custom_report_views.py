@@ -37,6 +37,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
+from django.db.models import Q
 from django.utils import timezone
 from clients.models import Client
 from projects.models import Project
@@ -46,6 +47,7 @@ from user_permissions.models import UserPermission
 from users.models import User
 from workspaces.models import WorkspaceMember
 
+from projects.archive import before_archive, tickets_before_archive
 from .custom_report_utils import (
     CHART_TYPES,
     GROUP_DIMS,
@@ -210,7 +212,7 @@ class CustomReportView(APIView):
         range_start, _ = envision_day_bounds_utc(week_start)
         _, range_end = envision_day_bounds_utc(week_end)
 
-        base = TimeEntry.objects.filter(
+        base = before_archive(TimeEntry.objects).filter(
             is_deleted=False, start_time__gte=range_start, start_time__lte=range_end,
         )
         if workspace_ids is not None:
@@ -310,7 +312,8 @@ class CustomReportOptionsView(APIView):
             members = members.filter(workspace_id__in=scope)
             clients = clients.filter(workspace_id__in=scope)
 
-        projects = all_projects.filter(is_active=True) if active_only else all_projects
+        # active_only (the filter dropdowns) still lists archived projects, so an admin can report on their old time.
+        projects = all_projects.filter(Q(is_active=True) | Q(archived_at__isnull=False)) if active_only else all_projects
         users = User.objects.filter(id__in=members.values("user_id"))
         if active_only:
             members = members.filter(is_active=True)
@@ -338,7 +341,8 @@ class CustomReportOptionsView(APIView):
                 for value, label in WorkspaceMember.GROUP_CHOICES
             ],
             "projects": [
-                {"id": str(p.id), "name": p.name, "job_code": p.job_code or ""}
+                {"id": str(p.id), "name": p.name, "job_code": p.job_code or "",
+                 "archived_on": timezone.localtime(p.archived_at).date().isoformat() if p.archived_at else None}
                 for p in projects.order_by("name")
             ],
             "clients": [

@@ -32,6 +32,7 @@ from time_entries.models import TimeEntry
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser
 
+from projects.archive import before_archive, tickets_before_archive
 from .models import LEMReport
 
 FIELD_TICKET_LEM_PREFIX = "FT"  # matches both the "FT-" and "FTF-" series
@@ -87,7 +88,7 @@ class DashboardSummaryView(APIView):
         if not is_admin:
             return Response(self._member_summary(user, start, end))
 
-        week_qs = TimeEntry.objects.filter(
+        week_qs = before_archive(TimeEntry.objects).filter(
             workspace_id__in=workspace_ids, start_time__date__range=[start, end], is_deleted=False,
         )
         week_totals = week_qs.aggregate(total_minutes=Sum("duration"), total_entries=Count("id"))
@@ -113,7 +114,7 @@ class DashboardSummaryView(APIView):
 
         fourteen_days_ago = timezone.now() - timedelta(days=14)
         active_recently = set(
-            TimeEntry.objects.filter(
+            before_archive(TimeEntry.objects).filter(
                 workspace_id__in=workspace_ids, start_time__gte=fourteen_days_ago, is_deleted=False,
             ).values_list("user_id", flat=True).distinct()
         )
@@ -126,7 +127,7 @@ class DashboardSummaryView(APIView):
         # of one query per member.
         last_entry_by_user = {
             row["user_id"]: row["last"]
-            for row in TimeEntry.objects.filter(
+            for row in before_archive(TimeEntry.objects).filter(
                 user_id__in=[m.user_id for m in inactive_members],
                 workspace_id__in=workspace_ids,
                 is_deleted=False,
@@ -161,7 +162,7 @@ class DashboardSummaryView(APIView):
             ).values_list("id", flat=True)
         )
         rows = (
-            TimeEntry.objects.filter(
+            before_archive(TimeEntry.objects).filter(
                 user=user, project_id__in=project_ids, start_time__date__range=[start, end], is_deleted=False,
             ).values("project_id").annotate(minutes=Sum("duration"))
         )
@@ -187,7 +188,7 @@ class DashboardHoursByProjectView(APIView):
         workspace_ids = _resolve_workspace_ids(request)
         start, end = _resolve_date_range(request)
 
-        qs = TimeEntry.objects.filter(
+        qs = before_archive(TimeEntry.objects).filter(
             workspace_id__in=workspace_ids, start_time__date__range=[start, end], is_deleted=False,
         ).exclude(project__isnull=True)
 
@@ -222,7 +223,7 @@ class DashboardFieldTicketsView(APIView):
         workspace_ids = _resolve_workspace_ids(request)
         start, end = _resolve_date_range(request)
 
-        lem_qs = LEMReport.objects.filter(
+        lem_qs = tickets_before_archive(LEMReport.objects).filter(
             project__workspace_id__in=workspace_ids,
             lem_number__startswith=FIELD_TICKET_LEM_PREFIX,
             lem_date__range=[start, end],
@@ -279,7 +280,7 @@ class DashboardAssetCostsView(APIView):
         workspace_ids = _resolve_workspace_ids(request)
         start, end = _resolve_date_range(request)
 
-        qs = AssetUsage.objects.filter(
+        qs = before_archive(AssetUsage.objects, prefix="time_entry__").filter(
             time_entry__workspace_id__in=workspace_ids,
             time_entry__start_time__date__range=[start, end],
             is_deleted=False,
@@ -336,7 +337,7 @@ class DashboardMyHoursByProjectView(APIView):
             start, end = get_week_bounds(today)
 
         rows = (
-            TimeEntry.objects.filter(
+            before_archive(TimeEntry.objects).filter(
                 user=request.user, start_time__date__range=[start, end], is_deleted=False,
             ).exclude(project__isnull=True)
             .values("project_id", "project__name")
@@ -367,7 +368,7 @@ class DashboardMyHoursByTaskView(APIView):
         start, end = _month_bounds(today)
 
         rows = (
-            TimeEntry.objects.filter(
+            before_archive(TimeEntry.objects).filter(
                 user=request.user, project_id=project_id, start_time__date__range=[start, end], is_deleted=False,
             ).exclude(task__isnull=True)
             .values("task_id", "task__name")

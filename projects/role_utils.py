@@ -19,6 +19,7 @@ from rest_framework.exceptions import ValidationError
 
 from workspaces.models import WorkspaceMember
 
+from .archive import ensure_open
 from .models import JobTitle, Project, ProjectRole, UserProjectRole
 
 DEFAULT_JOB_TITLE_NAME = "EG"
@@ -36,6 +37,7 @@ def resolve_project_workspace(user, project_id):
     project = Project.objects.select_related("workspace").filter(id=project_id).first()
     if project is None:
         raise ValidationError("Project not found.")
+    ensure_open(project)  # no time on an archived project
     if not WorkspaceMember.objects.filter(user=user, workspace_id=project.workspace_id).exists():
         raise ValidationError("This project is not in your workspace.")
     return project.workspace

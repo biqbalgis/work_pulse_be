@@ -26,6 +26,8 @@ from .serializers import (
     BulkTimeEntryOutputSerializer,
     resolve_quantity_used,
 )
+from projects.archive import ensure_open
+from .rules import ensure_not_future
 from projects.role_utils import labour_cost, resolve_entry_role, resolve_project_workspace
 from workspaces.models import WorkspaceMember
 from core.utils.logger import log_activity
@@ -145,6 +147,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
         start_time = serializer.validated_data["start_time"]
         end_time = serializer.validated_data["end_time"]
+        ensure_not_future(timezone.localtime(start_time).date())
 
         if end_time <= start_time:
             raise ValidationError("end_time must be after start_time.")
@@ -222,6 +225,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         reason = entry.timesheet_lock_reason()
         if reason:
             raise ValidationError(reason)
+        ensure_open(entry.project)  # time on an archived project stays as it was
         # ❌ Prevent editing if approved (locked)
         if entry.is_locked:
             raise ValidationError("This time entry is approved and cannot be edited.")
@@ -230,6 +234,8 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         project = validated_data.get("project", entry.project)
         job_title = validated_data.get("job_title", entry.job_title)
         start_time = validated_data.get("start_time", entry.start_time)
+        if "start_time" in validated_data:
+            ensure_not_future(timezone.localtime(start_time).date())
         end_time = validated_data.get("end_time", entry.end_time)
 
         if end_time and end_time <= start_time:
@@ -407,6 +413,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         reason = instance.timesheet_lock_reason()
         if reason:
             raise ValidationError(reason)
+        ensure_open(instance.project)  # time on an archived project stays as it was
         employee_full_name = instance.user.get_full_name().strip() or f"{instance.user.first_name} {instance.user.last_name}".strip() or getattr(instance.user, "username", "")
         employee_name = self._normalize_text(employee_full_name)
         job_title = self._normalize_text(instance.job_title.name if instance.job_title else "")
@@ -476,6 +483,7 @@ class BulkTimeEntryViewSet(viewsets.ViewSet):
 
                 # 4. Dates & Duration
                 entry_date = data['date'] # date object
+                ensure_not_future(entry_date)
                 end_date_val = data.get('end_date') or entry_date
                 start_time_obj = data['start_time'] # time object
                 end_time_obj = data['end_time'] # time object
@@ -692,6 +700,8 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
                 local_end_dt = self._local_dt(entry.end_time) if entry.end_time else None
 
                 entry_date = data.get("date") or local_start_dt.date()
+                if data.get("date"):
+                    ensure_not_future(entry_date)
                 start_time_val = data.get("start_time") or self._local_time(entry.start_time)
                 if start_time_val is None:
                     raise ValidationError("start_time is required.")
@@ -726,6 +736,7 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
 
                 if not project_id:
                     raise ValidationError("project is required.")
+                ensure_open(entry.project)  # time on an archived project stays as it was
                 if project_id != entry.project_id:
                     resolve_project_workspace(entry.user, project_id)
 

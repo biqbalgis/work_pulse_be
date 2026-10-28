@@ -43,6 +43,7 @@ from time_entries.models import TimeEntry
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import ADMIN_ONLY, MANAGE_ROLES, has_workspace_role
 
+from projects.archive import before_archive, tickets_before_archive
 from .models import LEMReport
 
 FIELD_TICKET_PREFIX = "FTF-"
@@ -149,7 +150,7 @@ class Filters:
     def _base_entries(self, start, end, people, approved=None):
         lo, _ = envision_day_bounds_utc(start)
         _, hi = envision_day_bounds_utc(end)
-        qs = TimeEntry.objects.filter(
+        qs = before_archive(TimeEntry.objects).filter(
             workspace_id=self.workspace_id, is_deleted=False, start_time__gte=lo, start_time__lte=hi,
         )
         if people:
@@ -187,7 +188,7 @@ class Filters:
 
     # ── field tickets ────────────────────────────────────────────────────
     def tickets(self):
-        qs = LEMReport.objects.filter(
+        qs = tickets_before_archive(LEMReport.objects).filter(
             project__workspace_id=self.workspace_id, lem_number__startswith=FIELD_TICKET_PREFIX,
         )
         if self.projects:
@@ -228,8 +229,9 @@ class ExpertOptionsView(_ExpertView):
             "is_admin": has_workspace_role(request.user, ws, ADMIN_ONLY),
             "projects": [
                 {"id": str(p.id), "name": p.name, "code": p.job_code or "", "client_id": str(p.client_id) if p.client_id else None,
-                 "billable": p.billable}
-                for p in Project.objects.filter(workspace_id=ws).order_by("name")
+                 "billable": p.billable,
+                 "archived_on": timezone.localtime(p.archived_at).date().isoformat() if p.archived_at else None}
+                for p in Project.objects.filter(workspace_id=ws, is_deleted=False).order_by("name")
             ],
             "clients": [{"id": str(c.id), "name": c.name} for c in Client.objects.filter(workspace_id=ws).order_by("name")],
             "employees": [{"id": str(m.user_id), "name": m.user.get_full_name() or m.user.email} for m in members],

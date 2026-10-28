@@ -25,6 +25,7 @@ from organization_asset.models import AssetUsage, OrganizationAsset
 from projects.role_utils import labour_cost, resolve_entry_role, resolve_project_workspace
 
 from .models import TimeEntry
+from .rules import ensure_not_future
 from .serializers import FieldTicketEntrySerializer, resolve_quantity_used
 
 User = get_user_model()
@@ -61,6 +62,10 @@ def _resolve_entry_values(data, existing_entry=None):
     # 4. Build UTC-aware datetimes — Field Ticket times from the frontend
     # are always Mountain Time (Envision GEO), regardless of server TIME_ZONE.
     entry_date   = data["date"]
+    try:
+        ensure_not_future(entry_date)  # today or earlier, never a future date
+    except ValidationError as exc:
+        raise ValueError(str(exc.detail[0])) from exc
     end_date_val = data.get("end_date") or entry_date
 
     start_dt = envision_local_to_utc(entry_date, data["start_time"])

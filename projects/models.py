@@ -18,6 +18,10 @@ class Project(SoftDeleteModel):
     ot_multiplier = models.DecimalField(max_digits=5, decimal_places=2, default=2)  # default double rate
     pm_info = models.JSONField(default=dict, blank=True, null=True)
     is_active = models.BooleanField(default=True)
+    # Archived: closed for good. Hidden from every project list and dropdown (is_active is False too) and no time
+    # can be logged or changed on it; reports keep its time up to this moment and nothing after.
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archived_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     # Non-billable projects: hours are recorded and shown, but never count toward client costs or invoices.
     billable = models.BooleanField(default=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_projects')
@@ -32,6 +36,10 @@ class Project(SoftDeleteModel):
             from .utils import get_next_job_code
             self.job_code = get_next_job_code(self.workspace)
         super().save(*args, **kwargs)
+
+    @property
+    def is_archived(self):
+        return self.archived_at is not None
 
     def __str__(self):
         return self.name

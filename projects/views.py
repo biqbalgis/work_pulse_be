@@ -3,6 +3,7 @@ from rest_framework import viewsets, permissions, serializers, status, filters
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from django.db import transaction, IntegrityError
+from django.utils import timezone
 
 from .models import Project, ProjectRole, UserProjectRole, JobTitle, RoleTemplate, RoleTemplateUser
 from .utils import get_next_job_code
@@ -51,9 +52,16 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        # Base queryset: only active projects and not deleted
+        # Base queryset: only active projects and not deleted. Archived (inactive) projects are left out of every
+        # list and dropdown; the Projects page asks for them with ?archived=1, and archive/restore can reach them.
         # workspace/client names are read by ProjectSerializer for every row -> JOIN them in
-        queryset = Project.objects.filter(is_deleted=False, is_active=True).select_related('workspace', 'client')
+        queryset = Project.objects.filter(is_deleted=False).select_related('workspace', 'client', 'archived_by')
+        if self.action in ("archive", "restore", "retrieve"):
+            pass
+        elif self.request.query_params.get('archived') in ('1', 'true'):
+            queryset = queryset.filter(is_active=False)
+        else:
+            queryset = queryset.filter(is_active=True)
 
         if user.is_superuser:
             # Superuser MUST provide workspace parameter
@@ -85,6 +93,33 @@ class ProjectViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(name__icontains=name)
 
         return queryset
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        """POST /api/projects/<id>/archive/ — close the project: it leaves every dropdown, no time can be logged
+        or changed on it, and reports keep its time up to now and nothing after (see projects.archive)."""
+        project = self.get_object()
+        if project.archived_at is not None:
+            return Response({"error": f"{project.name} is already archived."}, status=status.HTTP_400_BAD_REQUEST)
+        project.is_active = False
+        project.archived_at = timezone.now()
+        project.archived_by = request.user
+        project.save(update_fields=["is_active", "archived_at", "archived_by"])
+        log_activity(request.user, "ARCHIVE", "Project", project.id, request=request)
+        return Response(self.get_serializer(project).data)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        """POST /api/projects/<id>/restore/ — reopen an archived project."""
+        project = self.get_object()
+        if project.is_active and project.archived_at is None:
+            return Response({"error": f"{project.name} isn't archived."}, status=status.HTTP_400_BAD_REQUEST)
+        project.is_active = True
+        project.archived_at = None
+        project.archived_by = None
+        project.save(update_fields=["is_active", "archived_at", "archived_by"])
+        log_activity(request.user, "RESTORE", "Project", project.id, request=request)
+        return Response(self.get_serializer(project).data)
 
     def perform_create(self, serializer):
         from workspaces.models import Workspace

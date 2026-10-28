@@ -50,6 +50,7 @@ from time_entries.models import TimeEntry
 from users.models import User
 from workspaces.models import WorkspaceMember
 
+from projects.archive import before_archive, tickets_before_archive
 from .custom_report_utils import MAX_RANGE_DAYS
 from .custom_report_views import _BadRequest, _as_list, _parse_date, _resolve_workspace_scope
 
@@ -94,7 +95,7 @@ def _filtered_entries(request):
 
     start_utc, _ = envision_day_bounds_utc(date_from)
     _, end_utc = envision_day_bounds_utc(date_to)
-    qs = TimeEntry.objects.filter(is_deleted=False, start_time__gte=start_utc, start_time__lte=end_utc)
+    qs = before_archive(TimeEntry.objects).filter(is_deleted=False, start_time__gte=start_utc, start_time__lte=end_utc)
     if workspace_ids is not None:
         qs = qs.filter(workspace_id__in=workspace_ids)
 

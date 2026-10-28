@@ -6,12 +6,18 @@ from .models import Project, JobTitle, ProjectRole, UserProjectRole, RoleTemplat
 class ProjectSerializer(serializers.ModelSerializer):
     workspace_name = serializers.CharField(source='workspace.name', read_only=True)
     client_name = serializers.CharField(source='client.name', read_only=True)
+    archived_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
         fields = "__all__"
         # workspace is always set server-side — never accepted from the payload
-        read_only_fields = ["created_by", "workspace"]
+        # Archiving goes through POST /projects/<id>/archive/ and /restore/, never a plain edit.
+        read_only_fields = ["created_by", "workspace", "archived_at", "archived_by"]
+
+    def get_archived_by_name(self, obj):
+        user = obj.archived_by
+        return (user.get_full_name() or user.email) if user else ""
 
     def validate(self, attrs):
         from workspaces.models import WorkspaceMember, Workspace
