@@ -19,3 +19,5 @@
 *.pyc
 __pycache__/
 *.pyc
+# Uploaded / stored documents when no S3 bucket is set (never commit them)
+/media/

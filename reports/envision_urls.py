@@ -1,4 +1,5 @@
 from django.urls import path
+from .document_views import DocumentDetailView, LEMDocumentsView
 from .envision_views import (
     EnvisionLEMReportView,
     EnvisionFieldTicketLEMFromPayloadView,
@@ -31,4 +32,8 @@ urlpatterns = [
     path("lem/history/",             EnvisionFieldTicketHistoryView.as_view(), name="envision-lem-history"),
     path("lem/void/",                EnvisionLEMVoidView.as_view(),    name="envision-lem-void"),
     path("payroll/",                 EnvisionTimesheetReportView.as_view(), name="envision-payroll"),
+    # Documents kept with field tickets and invoices (S3): issued PDFs, verification documents, invoice files
+    path("lem/documents/",           LEMDocumentsView.as_view(), name="envision-lem-documents"),
+    path("documents/<uuid:pk>/",     DocumentDetailView.as_view(), name="envision-document"),
+    path("documents/<uuid:pk>/download/", DocumentDetailView.as_view(), name="envision-document-download"),
 ]

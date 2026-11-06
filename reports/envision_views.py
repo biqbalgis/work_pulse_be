@@ -12,6 +12,7 @@ Envision GEO — LEM Report API Views
   GET  /api/reports/envision/lem/history/                — Every issued revision of a field ticket
 """
 
+import io
 import re
 from collections import OrderedDict
 from datetime import datetime
@@ -40,7 +41,8 @@ from time_entries.models import TimeEntry
 from time_entries.serializers import FieldTicketEntrySerializer
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import ADMIN_ONLY, IsWorkspaceUser, has_workspace_role
-from .models import LEMReport, LEMRevision, LEMStatusEvent, format_display_number, split_year_prefix
+from .models import Invoice, LEMDocument, LEMReport, LEMRevision, LEMStatusEvent, format_display_number, split_year_prefix
+from .documents import document_json, save_upload, store_ticket_pdf, validate_upload
 from user_permissions.models import UserPermission
 from notifications.models import Notification
 from notifications.notify import notify_ticket
@@ -552,8 +554,12 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
             lem_report.delete()
             return Response({"error": f"PDF generation failed: {str(exc)}"}, status=500)
 
+        # Keep the PDF as issued (S3): the record of what was sent for approval.
+        pdf_bytes = pdf_buffer.getvalue()
+        store_ticket_pdf(lem_report, pdf_bytes, filename, request.user)
+
         return FileResponse(
-            pdf_buffer,
+            io.BytesIO(pdf_bytes),
             as_attachment=True,
             filename=filename,
             content_type="application/pdf",
@@ -683,10 +689,27 @@ class EnvisionFieldTicketListView(APIView):
 
         count = qs.count()
         start = (page - 1) * page_size
-        page_qs = qs[start:start + page_size]
+        page_qs = list(qs[start:start + page_size])
+        self._document_counts = self._count_documents(page_qs)
 
         serialize = self._serialize_costing if prefix == "CT-" else self._serialize_field_ticket
         return Response({"results": [serialize(lem) for lem in page_qs], "count": count, "status_counts": status_counts})
+
+    @staticmethod
+    def _count_documents(lems):
+        """{lem id: {"verification": n, "invoice": n}} for this page, in two queries."""
+        counts = {lem.id: {"verification": 0, "invoice": 0} for lem in lems}
+        rows = (LEMDocument.objects.filter(lem__in=lems, kind=LEMDocument.VERIFICATION)
+                .values("lem_id").annotate(n=Count("id")))
+        for row in rows:
+            counts[row["lem_id"]]["verification"] = row["n"]
+        by_invoice = dict(LEMDocument.objects.filter(invoice_id__in={lem.invoice_id for lem in lems if lem.invoice_id},
+                                                     kind=LEMDocument.INVOICE)
+                          .values_list("invoice_id").annotate(n=Count("id")))
+        for lem in lems:
+            if lem.invoice_id:
+                counts[lem.id]["invoice"] = by_invoice.get(lem.invoice_id, 0)
+        return counts
 
     def _base_fields(self, lem):
         locked = lem.status == LEMReport.STATUS_INVOICED
@@ -703,6 +726,11 @@ class EnvisionFieldTicketListView(APIView):
             "locked": locked,
             "invoiced_on": lem.invoiced_on,
             "invoice_number": lem.invoice_number,
+            # Documents kept with it (S3): verification documents on the ticket, files on its invoice.
+            "document_counts": getattr(self, "_document_counts", {}).get(lem.id, {"verification": 0, "invoice": 0}),
+            "can_upload_verification": lem.status in (LEMReport.STATUS_APPROVED, LEMReport.STATUS_INVOICED) and bool(lem.project_id) and (
+                self._status_workspace_ids is None or lem.project.workspace_id in self._status_workspace_ids
+            ),
             "template": lem.template or DEFAULT_TEMPLATE,
             "template_label": dict(LEMReport.TEMPLATE_CHOICES)[lem.template or DEFAULT_TEMPLATE],
             **_lem_status_fields(lem),
@@ -1419,8 +1447,12 @@ class EnvisionFieldTicketReviseView(APIView):
         lem.set_status(LEMReport.STATUS_PENDING, request.user, f"Resubmitted as revision R{new_revision:02d}")
         notify_ticket(lem, request.user, Notification.TICKET_UPDATED)
 
+        # Keep this revision's PDF as issued (S3), next to the earlier ones.
+        pdf_bytes = pdf_buffer.getvalue()
+        store_ticket_pdf(lem, pdf_bytes, filename, request.user)
+
         response = FileResponse(
-            pdf_buffer,
+            io.BytesIO(pdf_bytes),
             as_attachment=True,
             filename=filename,
             content_type="application/pdf",
@@ -1847,6 +1879,10 @@ class EnvisionLEMInvoiceView(APIView):
     """
     POST /api/reports/envision/lem/invoice/
         {"lem_numbers": ["FTF-000012", ...], "invoice_number": "INV-1043", "invoiced_on": "2026-10-26"}
+        or the same as multipart form data with the invoice document in "file" (PDF or image, optional)
+
+    The tickets are recorded on an Invoice (one per workspace and invoice number: adding tickets to an existing
+    number joins that invoice), and the uploaded invoice document is stored with it (S3, see reports.storage).
 
     Marks approved field tickets Invoiced: the status after Approved, recorded in the ticket's history. Invoicing is
     final: the ticket can't be revised, re-approved, rejected or deleted any more, and its time entries are locked
@@ -1857,9 +1893,15 @@ class EnvisionLEMInvoiceView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        numbers = request.data.get("lem_numbers") or []
+        if hasattr(request.data, "getlist"):  # multipart: lem_numbers repeated, or one comma-separated value
+            numbers = [n for raw in request.data.getlist("lem_numbers") for n in str(raw).split(",") if n.strip()]
+        else:
+            numbers = request.data.get("lem_numbers") or []
         if isinstance(numbers, str):
             numbers = [numbers]
+        upload = request.FILES.get("file")
+        if upload is not None:
+            validate_upload(upload)  # before anything is saved
         if not numbers:
             return Response({"error": "lem_numbers is required."}, status=400)
         if request.data.get("clear"):
@@ -1886,17 +1928,33 @@ class EnvisionLEMInvoiceView(APIView):
                 return Response({"error": f"{lem.ticket_number} isn't approved yet, so it can't be invoiced."}, status=400)
             lems.append(lem)
 
+        invoices = {}
         with transaction.atomic():
             for lem in lems:
+                workspace_id = lem.project.workspace_id
+                if workspace_id not in invoices:
+                    invoices[workspace_id], _ = Invoice.objects.get_or_create(
+                        workspace_id=workspace_id, number=invoice_number,
+                        defaults={"invoiced_on": invoiced_on, "client_id": lem.project.client_id,
+                                  "created_by": request.user},
+                    )
+                lem.invoice = invoices[workspace_id]
                 lem.invoiced_on = invoiced_on
                 lem.invoice_number = invoice_number
                 lem.invoiced_by = request.user
-                lem.save(update_fields=["invoiced_on", "invoice_number", "invoiced_by"])
+                lem.save(update_fields=["invoice", "invoiced_on", "invoice_number", "invoiced_by"])
                 lem.set_status(LEMReport.STATUS_INVOICED, request.user, f"Invoice {invoice_number}")
                 lem.time_entries.update(is_locked=True)
                 notify_ticket(lem, request.user, Notification.TICKET_INVOICED)
+        documents = []
+        if upload is not None:
+            for invoice in invoices.values():
+                upload.seek(0)
+                documents.append(document_json(save_upload(upload, LEMDocument.INVOICE, request.user, invoice=invoice)))
         return Response({
             "updated": [lem.ticket_number for lem in lems],
             "invoice_number": invoice_number,
+            "invoice_ids": [str(invoice.id) for invoice in invoices.values()],
+            "documents": documents,
             "invoiced_on": invoiced_on,
         })

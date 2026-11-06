@@ -48,6 +48,8 @@ pycparser==3.0
 PyJWT==2.10.1
 python-dateutil==2.9.0.post0
 python-decouple==3.8
+boto3==1.43.125
+django-storages[s3]==1.14.6
 pytz==2026.2
 redis==5.0.1
 reportlab==4.4.4

@@ -214,3 +214,18 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# ── Documents: field ticket PDFs, verification documents, invoices (reports.storage.DocumentStorage) ──
+# Stored in this S3 bucket (private; the app serves downloads after checking access). With no bucket set they're
+# kept on this server's disk under MEDIA_ROOT/documents instead, so the app works before the keys are added.
+AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
+AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
+AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')
+AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='ca-central-1')
+# Only for S3-compatible services (MinIO, DigitalOcean Spaces...); leave empty for AWS.
+AWS_S3_ENDPOINT_URL = config('AWS_S3_ENDPOINT_URL', default='') or None
+# Folder inside the bucket every document goes under.
+AWS_DOCUMENTS_PREFIX = config('AWS_DOCUMENTS_PREFIX', default='workpulse')
+# Largest verification / invoice file people can upload, in MB.
+DOCUMENT_MAX_UPLOAD_MB = config('DOCUMENT_MAX_UPLOAD_MB', default=20, cast=int)
+DATA_UPLOAD_MAX_MEMORY_SIZE = (DOCUMENT_MAX_UPLOAD_MB + 1) * 1024 * 1024

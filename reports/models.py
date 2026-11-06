@@ -51,6 +51,9 @@ class LEMReport(SoftDeleteModel):
     invoiced_on = models.DateField(null=True, blank=True)
     invoice_number = models.CharField(max_length=50, blank=True, default="")
     invoiced_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    # The invoice this ticket is on (one invoice can cover several tickets); invoice_number / invoiced_on above
+    # mirror it for older code.
+    invoice = models.ForeignKey("reports.Invoice", on_delete=models.SET_NULL, null=True, blank=True, related_name="tickets")
 
     # Approval by the consultant / contractor, recorded by a team member with the LEM approval permission.
     # A new ticket (and every revision of it) is pending; set_status() logs each change in LEMStatusEvent.
@@ -262,3 +265,6 @@ class DailyTicketDownload(models.Model):
             except IntegrityError:
                 continue
         raise IntegrityError("Could not reserve a Daily Ticket number, please try again.")
+
+
+from .document_models import Invoice, LEMDocument  # noqa: E402,F401  (registers the models)

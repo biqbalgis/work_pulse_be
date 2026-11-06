@@ -28,7 +28,7 @@
       <excludeFolder url="file://$MODULE_DIR$/users/migrations" />
       <excludeFolder url="file://$MODULE_DIR$/workspaces/migrations" />
     </content>
-    <orderEntry type="jdk" jdkName="Python 3.13 (work_pulse_be)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="E:\FreeLauncing\Stone River\development\work_pulse_be\.venv" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="PyDocumentationSettings">
