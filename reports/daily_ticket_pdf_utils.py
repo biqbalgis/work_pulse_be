@@ -53,34 +53,94 @@ def _text(c, x, y, value, size=8, bold=False, align="left", color=INK):
         c.drawString(x, y, value)
 
 
-def _fit(text, width, size, bold=False):
-    """Trim `text` with an ellipsis so it fits in `width` points."""
-    text = str(text or "")
-    font = "Helvetica-Bold" if bold else "Helvetica"
-    if stringWidth(text, font, size) <= width:
-        return text
-    while text and stringWidth(text + "…", font, size) > width:
-        text = text[:-1]
-    return text + "…"
+# Text on the tickets is never cut off. A value that doesn't fit its box first gets slightly smaller type on one
+# line, then is word-wrapped onto more lines inside the same box, getting smaller until every word fits.
+SMALLEST_FONT = 4
 
 
-def _wrap(text, width, size, max_lines):
-    """Word-wrap `text` into at most `max_lines` lines of `width` points; overflow is cut with an ellipsis."""
-    words = str(text or "").split()
+def _font(bold):
+    return "Helvetica-Bold" if bold else "Helvetica"
+
+
+def _lines(text, width, size, bold=False):
+    """Word-wrap `text` into lines no wider than `width` points. Nothing is dropped: a word too long for a line
+    (an email address, say) is split across lines."""
+    font = _font(bold)
     lines, current = [], ""
-    for index, word in enumerate(words):
-        candidate = f"{current} {word}".strip()
-        if stringWidth(candidate, "Helvetica", size) <= width:
+    for word in str(text or "").split():
+        candidate = f"{current} {word}" if current else word
+        if stringWidth(candidate, font, size) <= width:
             current = candidate
             continue
-        lines.append(current)
-        current = word
-        if len(lines) == max_lines:
-            lines[-1] = _fit(lines[-1] + " …", width, size)
-            return lines
+        if current:
+            lines.append(current)
+        current = ""
+        for char in word:
+            if current and stringWidth(current + char, font, size) > width:
+                lines.append(current)
+                current = ""
+            current += char
     if current:
         lines.append(current)
     return lines
+
+
+def _one_line_size(text, width, size, min_size, bold=False):
+    """The largest size from `size` down to `min_size` at which `text` fits on one line, or None."""
+    text = str(text or "")
+    while size >= min_size:
+        if stringWidth(text, _font(bold), size) <= width:
+            return size
+        size -= 0.5
+    return None
+
+
+def _wrap_to_lines(text, width, size, max_lines, bold=False):
+    """(size, lines): `text` wrapped at the largest size from `size` down that needs at most `max_lines` lines."""
+    while True:
+        lines = _lines(text, width, size, bold)
+        if len(lines) <= max_lines or size <= SMALLEST_FONT:
+            return size, lines
+        size -= 0.25
+
+
+def _wrap_to_box(text, width, height, size, bold=False, leading=1.15):
+    """(size, lines, line_height): `text` wrapped at the largest size from `size` down that fits `height` points."""
+    while True:
+        lines = _lines(text, width, size, bold)
+        if len(lines) * size * leading <= height or size <= SMALLEST_FONT:
+            return size, lines, size * leading
+        size -= 0.25
+
+
+def _draw_fitted(c, text, x1, x2, y_top, height, size, *, baseline=None, shrink_to=None, bold=False, align="left",
+                 color=INK, leading=1.15):
+    """Draw `text` inside the box x1..x2 by y_top..y_top-height, never cutting it off.
+
+    One line at `size` (down to `shrink_to`) where it fits, at `baseline` if given; otherwise word-wrapped and
+    centred in the box in the largest type that fits."""
+    text = " ".join(str(text or "").split())
+    if not text:
+        return
+    width = x2 - x1
+    x = {"left": x1, "right": x2, "center": (x1 + x2) / 2}[align]
+    single = _one_line_size(text, width, size, shrink_to or size, bold)
+    if single is not None and baseline is not None:
+        _text(c, x, baseline, text, size=single, bold=bold, align=align, color=color)
+        return
+    if single is not None:
+        size, lines, line_h = single, [text], single * leading
+    else:
+        size, lines, line_h = _wrap_to_box(text, width, height, size, bold, leading)
+    _draw_lines(c, lines, x, y_top - (height - len(lines) * line_h) / 2, line_h, size, bold=bold, align=align,
+                color=color)
+
+
+def _draw_lines(c, lines, x, y_top, line_h, size, bold=False, align="left", color=INK):
+    """Draw `lines` one under another, starting at `y_top`, each centred in its `line_h` slot."""
+    for i, line in enumerate(lines):
+        baseline = y_top - i * line_h - line_h / 2 - size * 0.34
+        _text(c, x, baseline, line, size=size, bold=bold, align=align, color=color)
 
 
 def paginate(filled, labour_per_page, equipment_per_page):
@@ -181,9 +241,11 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
     field_h = 27
 
     c.rect(box_x1, box_top - number_h, box_x2 - box_x1, number_h)
-    _text(c, box_x1 + 10, box_top - number_h + 13, "DAILY TICKET NO.", size=11, bold=True)
-    _text(c, box_x2 - 12, box_top - number_h + 11, _fit(ticket_number, 125, 18, bold=True), size=18, bold=True,
-          align="right", color=NAVY)
+    number_label = "DAILY TICKET NO."
+    _text(c, box_x1 + 10, box_top - number_h + 13, number_label, size=11, bold=True)
+    number_x1 = box_x1 + 10 + stringWidth(number_label, "Helvetica-Bold", 11) + 10
+    _draw_fitted(c, ticket_number, number_x1, box_x2 - 10, box_top - 2, number_h - 4, 18,
+                 baseline=box_top - number_h + 11, shrink_to=11, bold=True, align="right", color=NAVY)
 
     fields = [
         ("DATE", ticket_date, 11),
@@ -196,8 +258,12 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
         c.rect(box_x1, y - field_h, box_x2 - box_x1, field_h)
         _text(c, box_x1 + 5, y - 9, label, size=6.5, bold=True)
         if value:
-            _text(c, box_x1 + 70, y - field_h + 7, _fit(value, box_x2 - box_x1 - 76, size, bold=True), size=size,
-                  bold=True)
+            value_x1 = box_x1 + 70
+            if _one_line_size(value, box_x2 - value_x1 - 6, size, size - 1.5, bold=True) is None:
+                # Wrapping: use the box's full height, to the right of its label.
+                value_x1 = max(value_x1, box_x1 + 5 + stringWidth(label, "Helvetica-Bold", 6.5) + 6)
+            _draw_fitted(c, value, value_x1, box_x2 - 6, y - 2, field_h - 4, size, baseline=y - field_h + 7,
+                         shrink_to=size - 1.5, bold=True)
         y -= field_h
     box_bottom = y
 
@@ -205,7 +271,10 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
     to_y = contact_bottom - 8
     _text(c, LEFT, to_y + 2, "TO:", size=9, bold=True)
     if filled.get("customer"):
-        _text(c, LEFT + 26, to_y + 3, _fit(filled["customer"], 290 - LEFT - 28, 10, bold=True), size=10, bold=True)
+        # A long name carries on along the next TO: lines.
+        size, lines = _wrap_to_lines(filled["customer"], 290 - LEFT - 28, 10, 3, bold=True)
+        for i, line in enumerate(lines):
+            _text(c, LEFT + 26, to_y + 3 - i * 20, line, size=size, bold=True)
     c.setLineWidth(0.5)
     for i in range(3):
         line_y = to_y - i * 20
@@ -224,15 +293,24 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
     if filled.get("non_billable"):
         _text(c, RIGHT - 6, desc_top - HEADER_H + 5, "NON-BILLABLE · HOURS ONLY", size=8, bold=True, align="right",
               color=SUN)
-    c.setLineWidth(0.4)
-    c.setStrokeColor(FAINT)
-    for i in range(1, desc_lines):
-        line_y = desc_top - HEADER_H - i * desc_line_h
-        c.line(LEFT + 4, line_y, RIGHT - 4, line_y)
-    c.setStrokeColor(INK)
-    c.setLineWidth(LINE_W)
-    for i, line in enumerate(_wrap(filled.get("description", ""), RIGHT - LEFT - 12, 9, desc_lines)):
-        _text(c, LEFT + 6, desc_top - HEADER_H - i * desc_line_h - 13, line, size=9)
+    desc_width = RIGHT - LEFT - 12
+    description = _lines(filled.get("description", ""), desc_width, 9)
+    if len(description) <= desc_lines:
+        # Fits the ruled writing lines.
+        c.setLineWidth(0.4)
+        c.setStrokeColor(FAINT)
+        for i in range(1, desc_lines):
+            line_y = desc_top - HEADER_H - i * desc_line_h
+            c.line(LEFT + 4, line_y, RIGHT - 4, line_y)
+        c.setStrokeColor(INK)
+        c.setLineWidth(LINE_W)
+        for i, line in enumerate(description):
+            _text(c, LEFT + 6, desc_top - HEADER_H - i * desc_line_h - 13, line, size=9)
+    else:
+        # Too long for the ruled lines: smaller type over the whole box, without the rules.
+        body_h = desc_lines * desc_line_h - 6
+        size, lines, line_h = _wrap_to_box(filled["description"], desc_width, body_h, 8.5, leading=1.2)
+        _draw_lines(c, lines, LEFT + 6, desc_top - HEADER_H - 3, line_h, size)
 
     # ── Labour (left) ────────────────────────────────────────────────────
     table_top = desc_bottom - 8
@@ -252,7 +330,8 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
         _text(c, (col_x[0] + col_x[1]) / 2, base, row.get("rt", ""), size=8.5, align="center")
         _text(c, (col_x[1] + col_x[2]) / 2, base, row.get("ot", ""), size=8.5, align="center")
         _text(c, (col_x[2] + col_x[3]) / 2, base, row.get("dt", ""), size=8.5, align="center")
-        _text(c, col_x[3] + 3, base, _fit(row.get("name", ""), labour_cols[3][1] - 6, 8.5), size=8.5)
+        _draw_fitted(c, row.get("name", ""), col_x[3] + 3, col_x[4] - 3, base + 12, ROW_H - 1, 8.5, baseline=base,
+                     shrink_to=7, leading=1.08)
         _text(c, col_x[5] - 3, base, row.get("rate", ""), size=8.5, align="right")
         _text(c, col_x[6] - 3, base, row.get("amount", ""), size=8.5, align="right")
     if is_last and filled.get("labour_total"):
@@ -277,7 +356,8 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
         if row.get("rate"):
             detail = f"{detail} @ {row['rate']}".strip()
         label = f"{row.get('name', '')} ({detail})" if detail else row.get("name", "")
-        _text(c, rx1 + 3, base, _fit(label, rx_amount - rx1 - 6, 7.5), size=7.5)
+        _draw_fitted(c, label, rx1 + 3, rx_amount - 3, base + 12, ROW_H - 1, 7.5, baseline=base, shrink_to=6.5,
+                     leading=1.08)
         _text(c, RIGHT - 3, base, row.get("amount", ""), size=8.5, align="right")
     y -= gap
     totals = {

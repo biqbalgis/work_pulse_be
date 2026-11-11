@@ -14,7 +14,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
-from .daily_ticket_pdf_utils import INK, LOGO_PATH, NAVY, SUN, _fit, _text, _wrap, draw_page_count, paginate
+from .daily_ticket_pdf_utils import INK, LOGO_PATH, NAVY, SUN, _draw_fitted, _text, draw_page_count, paginate
 
 COMPANY_NAME = "Bigstone Oilfield Services & Supplies Ltd."
 COMPANY_ADDRESS = ["#166a, Wabasca-Desmarais, Alberta", "T0G 2K0"]
@@ -88,17 +88,12 @@ def _table(c, y_top, columns, rows, data_rows=(), header_h=16):
     c.setLineWidth(LINE_W)
 
     for row_index, row in enumerate(data_rows):
-        base = body_top - row_index * ROW_H - 8.5
+        row_top = body_top - row_index * ROW_H
         x = LEFT
         for _, width, key, align in columns:
-            value = _fit(row.get(key, ""), width - 4, CELL_SIZE) if key else ""
-            if value:
-                if align == "right":
-                    _text(c, x + width - 2, base, value, size=CELL_SIZE, align="right")
-                elif align == "center":
-                    _text(c, x + width / 2, base, value, size=CELL_SIZE, align="center")
-                else:
-                    _text(c, x + 2, base, value, size=CELL_SIZE)
+            if key:
+                _draw_fitted(c, row.get(key, ""), x + 2, x + width - 2, row_top - 0.25, ROW_H - 0.5, CELL_SIZE,
+                             baseline=row_top - 8.5, shrink_to=5.5, align=align, leading=1.05)
             x += width
     return y_bottom
 
@@ -120,28 +115,26 @@ def _subtotal(c, y_top, columns, label, amount=""):
 
 
 def _info_grid(c, y_top, rows, label_w, split, right_label_w, row_h=13):
-    """Two-column label/value grid. Each row is (left_label, left_value, right_label, right_value); a row
-    whose right_label is None spans the full width."""
+    """Two-column label/value grid. Each row is (left_label, left_value, right_label, right_value[, rows_tall]);
+    a row whose right_label is None spans the full width. Values too long for their cell are wrapped, never cut."""
     y = y_top
     c.setLineWidth(LINE_W)
-    for left_label, left_value, right_label, right_value in rows:
-        y_next = y - row_h
-        c.rect(LEFT, y_next, WIDTH, row_h)
-        _text(c, LEFT + 3, y_next + 4, left_label, size=6.5, bold=True)
+    for left_label, left_value, right_label, right_value, *tall in rows:
+        height = row_h * (tall[0] if tall else 1)
+        y_next = y - height
+        c.rect(LEFT, y_next, WIDTH, height)
+        _text(c, LEFT + 3, y - row_h + 4, left_label, size=6.5, bold=True)
         c.setLineWidth(0.3)
         c.line(LEFT + label_w, y, LEFT + label_w, y_next)
         left_end = RIGHT if right_label is None else split
-        if left_value:
-            _text(c, LEFT + label_w + 4, y_next + 3.5, _fit(left_value, left_end - LEFT - label_w - 8, 8, bold=True),
-                  size=8, bold=True, color=NAVY)
+        _draw_fitted(c, left_value, LEFT + label_w + 4, left_end - 4, y - 0.5, height - 1, 8,
+                     baseline=y - row_h + 3.5 if height == row_h else None, shrink_to=7, bold=True, color=NAVY)
         if right_label is not None:
             c.line(split, y, split, y_next)
             c.line(split + right_label_w, y, split + right_label_w, y_next)
             _text(c, split + 3, y_next + 4, right_label, size=6.5, bold=True)
-            if right_value:
-                _text(c, split + right_label_w + 4, y_next + 3,
-                      _fit(right_value, RIGHT - split - right_label_w - 8, 8.5, bold=True), size=8.5, bold=True,
-                      color=NAVY)
+            _draw_fitted(c, right_value, split + right_label_w + 4, RIGHT - 4, y - 0.5, height - 1, 8.5,
+                         baseline=y_next + 3, shrink_to=7, bold=True, color=NAVY)
         c.setLineWidth(LINE_W)
         y = y_next
     return y
@@ -199,8 +192,6 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
 
     # ── Ticket information ───────────────────────────────────────────────
     label_w = 62
-    description = _wrap(filled.get("description", ""), RIGHT - LEFT - label_w - 8, 8, 2)
-    description += [""] * (2 - len(description))
     y = _info_grid(
         c, top - logo_h - 6,
         [
@@ -208,8 +199,7 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
             ("ATTENTION:", filled.get("attention", ""), "PREPARED BY:", filled.get("prepared_by", "")),
             ("LOCATION:", filled.get("location", ""), "PO#:", ""),
             ("DATE:", ticket_date, "PROJECT #:", filled.get("project_number", "")),
-            ("DESCRIPTION:", description[0], None, None),
-            ("", description[1], None, None),
+            ("DESCRIPTION:", filled.get("description", ""), None, None, 2),
         ],
         label_w=label_w, split=360, right_label_w=62,
     )
@@ -255,7 +245,8 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
     bill_y = summary_bottom - 14
     _text(c, PAGE_W / 2 - 60, bill_y, "Bill to:", size=7.5, bold=True, align="right")
     if filled.get("customer"):
-        _text(c, PAGE_W / 2 - 52, bill_y, _fit(filled["customer"], 160, 7.5, bold=True), size=7.5, bold=True)
+        _draw_fitted(c, filled["customer"], PAGE_W / 2 - 52, PAGE_W / 2 + 108, bill_y + 9, 10, 7.5, baseline=bill_y,
+                     shrink_to=6, bold=True)
     c.setLineWidth(0.4)
     c.line(PAGE_W / 2 - 55, bill_y - 2, PAGE_W / 2 + 110, bill_y - 2)
 
@@ -277,5 +268,5 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
             fy = first_y - i * line_gap
             _text(c, label_right_x, fy, label, size=6.5, bold=True, align="right")
             c.line(label_right_x + 4, fy - 1.5, line_end_x, fy - 1.5)
-            if values.get(label):
-                _text(c, label_right_x + 6, fy, _fit(values[label], line_end_x - label_right_x - 8, 6.5), size=6.5)
+            _draw_fitted(c, values.get(label, ""), label_right_x + 6, line_end_x - 2, fy + 7.5, 8.5, 6.5,
+                         baseline=fy, shrink_to=5.5)
