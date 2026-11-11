@@ -767,12 +767,17 @@ class EnvisionFieldTicketListView(APIView):
             for row in data.get("equipment_rows", [])
         ]
 
+        boss = data.get("boss") or {}
         return {
             **self._base_fields(lem),
             "total_hours": _fmt_money(total_hours),
             "asset_info": asset_info,
-            # The ticket's total as printed: labour + equipment on a BOSS template, equipment only on older tickets.
-            "amount": (data.get("boss") or {}).get("subtotal") or data.get("total_cost") or "",
+            # The ticket's total as printed: labour + equipment + GST on a BOSS template (tickets issued before GST:
+            # labour + equipment), equipment only on older tickets.
+            "amount": boss.get("total") or boss.get("subtotal") or data.get("total_cost") or "",
+            "subtotal": boss.get("subtotal") or data.get("total_cost") or "",
+            "gst": boss.get("gst") or "",
+            "gst_rate": boss.get("gst_rate") or "",
         }
 
     def _serialize_costing(self, lem):

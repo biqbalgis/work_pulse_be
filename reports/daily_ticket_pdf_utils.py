@@ -4,7 +4,7 @@ Daily Ticket (paper LEM, template 1) PDF for Bigstone Oilfield Services & Suppli
 A copy of the pre-printed ticket book page. Used two ways:
   - blank, to print and fill in by hand in the field: only the ticket number and date are filled in;
   - filled, from a submitted field ticket: everything the system knows is filled in, the rest
-    (materials, GST, approval stamp, signature, ...) is left blank to complete by hand.
+    (materials, approval stamp, signature, ...) is left blank to complete by hand.
 """
 
 import io
@@ -364,9 +364,12 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
         "TOTAL EQUIPMENT": filled.get("equipment_total", ""),
         "TOTAL LABOUR": filled.get("labour_total", ""),
         "SUBTOTAL": filled.get("subtotal", ""),
+        "GST": filled.get("gst", ""),
+        "TOTAL": filled.get("total", ""),
     }
     for label in ("TOTAL EQUIPMENT", "TOTAL MATERIAL", "TOTAL LABOUR", "SUBTOTAL", "GST", "TOTAL"):
-        y = _total_row(c, rx1, RIGHT, rx_amount, y, label)
+        printed = f"GST ({filled['gst_rate']})" if label == "GST" and filled.get("gst_rate") else label
+        y = _total_row(c, rx1, RIGHT, rx_amount, y, printed)
         if is_last and totals.get(label):
             _text(c, RIGHT - 3, y + 5.5, totals[label], size=8.5, bold=True, align="right")
     totals_bottom = y

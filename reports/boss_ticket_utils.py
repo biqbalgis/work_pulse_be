@@ -4,12 +4,13 @@ submitted field ticket.
 
 The field ticket's stored report_data carries "boss_template" (which template the user picked) and "boss"
 (the data below), so a revision or a later re-download prints the same template the ticket was issued on.
-Fields the field ticket form does not capture (PO#, AFE, CVE codes, materials, GST, ...) stay blank.
+Fields the field ticket form does not capture (PO#, AFE, CVE codes, materials, ...) stay blank. GST is the
+project's GST rate (5% unless the project says otherwise) of the ticket subtotal.
 """
 
 from collections import OrderedDict
 from datetime import date as date_cls
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from core.utils.pay_rules import DAILY_RT_HOURS, split_entries
 from projects.role_utils import DEFAULT_JOB_TITLE_NAME
@@ -28,8 +29,24 @@ BOSS_TEMPLATES = {
 DEFAULT_TEMPLATE = DailyTicketDownload.DAILY_TICKET
 
 
+DEFAULT_GST_RATE = Decimal("5")
+
+
 def _money(value):
     return f"${value:,.2f}"
+
+
+def _percent(rate):
+    """5 -> "5%", 5.25 -> "5.25%"."""
+    return f"{rate.normalize():f}%" if rate == rate.to_integral() else f"{rate:f}".rstrip("0") + "%"
+
+
+def gst_totals(subtotal, project):
+    """{"gst_rate", "gst", "total"} for a ticket subtotal, at the project's GST rate."""
+    rate = Decimal(getattr(project, "gst_rate", None) if getattr(project, "gst_rate", None) is not None
+                   else DEFAULT_GST_RATE)
+    gst = (subtotal * rate / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return {"gst_rate": _percent(rate), "gst": _money(gst), "total": _money(subtotal + gst)}
 
 
 def _hours(value):
@@ -202,6 +219,7 @@ def build_boss_ticket_data(entries, project, task, prepared_by=None):
         "labour_total": _money(labour_total),
         "equipment_total": _money(equipment_total),
         "subtotal": _money(labour_total + equipment_total),
+        **gst_totals(labour_total + equipment_total, project),
         "non_billable": not project.billable,
     }
     if not project.billable:
@@ -209,7 +227,7 @@ def build_boss_ticket_data(entries, project, task, prepared_by=None):
         for row in labour_rows + equipment_rows:
             row["rate"] = ""
             row["amount"] = ""
-        data.update(labour_total="", equipment_total="", subtotal="")
+        data.update(labour_total="", equipment_total="", subtotal="", gst_rate="", gst="", total="")
     return data
 
 

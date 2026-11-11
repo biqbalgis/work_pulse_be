@@ -234,12 +234,23 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
         c.line(LEFT + i * col_w, body_top, LEFT + i * col_w, summary_bottom)
     c.setLineWidth(LINE_W)
 
+    # Subtotal, GST and total, stacked in the box beside the summary.
     box_x1 = RIGHT - 140
     box_h = summary_top - summary_bottom
-    _text(c, box_x1 - 8, summary_bottom + box_h / 2 - 3, "SUBTOTAL:", size=9, bold=True, align="right")
-    c.rect(box_x1, summary_bottom, RIGHT - box_x1, box_h)
-    if is_last and filled.get("subtotal"):
-        _text(c, RIGHT - 8, summary_bottom + box_h / 2 - 5, filled["subtotal"], size=14, bold=True, align="right")
+    row_h = box_h / 3
+    gst_label = f"GST ({filled['gst_rate']}):" if filled.get("gst_rate") else "GST:"
+    rows = (("SUBTOTAL:", "subtotal", 10), (gst_label, "gst", 10), ("TOTAL:", "total", 12))
+    for i, (label, key, size) in enumerate(rows):
+        row_top = summary_top - i * row_h
+        is_total = key == "total"
+        if is_total:
+            c.setFillColor(AMOUNT_BG)
+            c.rect(box_x1, row_top - row_h, RIGHT - box_x1, row_h, stroke=0, fill=1)
+        c.setStrokeColor(INK)
+        c.rect(box_x1, row_top - row_h, RIGHT - box_x1, row_h)
+        _text(c, box_x1 - 8, row_top - row_h / 2 - 3, label, size=9 if is_total else 8, bold=True, align="right")
+        if is_last and filled.get(key):
+            _text(c, RIGHT - 8, row_top - row_h / 2 - size * 0.36, filled[key], size=size, bold=True, align="right")
 
     # ── Bill to + approval details ───────────────────────────────────────
     bill_y = summary_bottom - 14
@@ -255,7 +266,7 @@ def _draw_page(c, ticket_number, ticket_date, filled, labour, equipment, is_last
         "Job Name:": filled.get("location", ""),
         "Service Date:": ticket_date if filled else "",
         "Vendor:": COMPANY_NAME,
-        "Amount:": filled.get("subtotal", "") if is_last else "",
+        "Amount:": (filled.get("total") or filled.get("subtotal", "")) if is_last else "",
     }
     left_fields = ["Attention:", "Invoice Contact / Department:", "Site Name:", "Job Name:", "Service Date:",
                    "WBS / AFE:", "GL Code:", "MG Code:"]

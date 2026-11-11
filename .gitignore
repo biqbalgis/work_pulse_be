@@ -21,3 +21,6 @@ __pycache__/
 *.pyc
 # Uploaded / stored documents when no S3 bucket is set (never commit them)
 /media/
+.idea
+.idea/misc.xml
+.idea/work_pulse_be.iml

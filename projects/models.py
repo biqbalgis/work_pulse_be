@@ -1,4 +1,7 @@
 
+from decimal import Decimal
+
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from core.models import SoftDeleteModel
 from workspaces.models import Workspace
@@ -24,6 +27,11 @@ class Project(SoftDeleteModel):
     archived_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     # Non-billable projects: hours are recorded and shown, but never count toward client costs or invoices.
     billable = models.BooleanField(default=True)
+    # GST charged on this project's field tickets, as a percentage of the ticket subtotal (5 = 5%).
+    gst_rate = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("5.00"),
+        validators=[MinValueValidator(Decimal("0")), MaxValueValidator(Decimal("100"))],
+    )
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_projects')
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
