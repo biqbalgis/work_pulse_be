@@ -10,16 +10,16 @@ def get_user_primary_workspace(user):
     return WorkspaceMember.objects.filter(user=user).first().workspace if not user.is_superuser else None
 
 
-def resolve_target_user(request_user, target_user_id):
+def resolve_target_user(request_user, target_user_id, code="timesheet.add_all",
+                        message="You don't have permission to work on other people's time."):
     """
-    "Act for another employee" support (an admin viewing / adding time on someone's timesheet).
+    "Act for another employee" support (viewing / adding time on someone else's timesheet).
 
     Returns (user, workspace):
       - no target, or the caller's own id  -> (request_user, None); callers keep their normal behaviour
       - a superuser                        -> any active user, in that user's first workspace
-      - a workspace admin                  -> a user who is a member of a workspace the caller ADMINISTERS,
-                                              in that workspace
-    Anyone else, or a target outside the caller's workspaces, is refused.
+      - anyone with permission `code`      -> a member of a workspace where the caller has it, in that workspace
+    Anyone else, or a target outside those workspaces, is refused.
     """
     from django.core.exceptions import ValidationError as DjangoValidationError
     from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -37,10 +37,10 @@ def resolve_target_user(request_user, target_user_id):
     if request_user.is_superuser:
         member = memberships.first()
     else:
-        administered = WorkspaceMember.objects.filter(
-            user=request_user, role="admin", workspace__is_deleted=False,
-        ).values_list("workspace_id", flat=True)
-        member = memberships.filter(workspace_id__in=administered).first()
+        from user_permissions.access import workspaces_with
+
+        allowed = workspaces_with(request_user, code) or set()
+        member = memberships.filter(workspace_id__in=allowed).first()
     if not member:
-        raise PermissionDenied("You can only work on the timesheet of a member of a workspace you administer.")
+        raise PermissionDenied(message)
     return target, member.workspace

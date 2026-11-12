@@ -98,12 +98,15 @@ class RegisterSerializer(serializers.ModelSerializer):
     group = serializers.ChoiceField(
         choices=WorkspaceMember.GROUP_CHOICES, required=False, allow_null=True, allow_blank=True,
     )
+    # The new user's permission group (user_permissions.PermissionGroup). Sets their role too; without it the role
+    # picks the matching starter group.
+    permission_group = serializers.UUIDField(required=False, allow_null=True)
 
     class Meta:
         model = User
         fields = [
             'id', 'email', 'first_name', 'last_name', 'password',
-            'workspace_id', 'role', 'group'
+            'workspace_id', 'role', 'group', 'permission_group'
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
@@ -111,6 +114,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         workspace_id = validated_data.pop('workspace_id', None)
         role = validated_data.pop('role', 'user')
         group = validated_data.pop('group', None) or None
+        permission_group_id = validated_data.pop('permission_group', None)
 
         email = validated_data.get('email').strip().lower()
         validated_data['username'] = email
@@ -131,8 +135,21 @@ class RegisterSerializer(serializers.ModelSerializer):
         if workspace.is_envision and not group:
             raise serializers.ValidationError({"group": "Select a group for this user."})
 
+        permission_group = None
+        if permission_group_id:
+            from user_permissions.models import PermissionGroup
+
+            permission_group = PermissionGroup.objects.filter(id=permission_group_id, workspace=workspace).first()
+            if permission_group is None:
+                raise serializers.ValidationError({"permission_group": "Choose one of this workspace's permission groups."})
+            role = "admin" if permission_group.is_system else permission_group.base_role
+
         user = User.objects.create_user(**validated_data)
-        WorkspaceMember.objects.create(workspace=workspace, user=user, role=role, group=group)
+        member = WorkspaceMember.objects.create(workspace=workspace, user=user, role=role, group=group)
+        if permission_group is not None:
+            from user_permissions.access import set_access
+
+            set_access(member, group=permission_group)
         return user
 
 

@@ -26,7 +26,9 @@ from .serializers import (
     UserSerializer,
     _workspace_logo_url,
 )
-from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser, MANAGE_ROLES, get_member_role
+from workspaces.permissions import IsSuperUser
+from user_permissions.access import has_perm
+from user_permissions.drf import ActionPermissions, require
 from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
 from core.utils.logger import log_activity, log_error
 
@@ -87,10 +89,55 @@ class MeView(APIView):
             "workspace": workspace_data,
         })
 
+# Seeing the people of a workspace: the Team page, and the employee pickers of pages that work on other people's
+# time and approvals.
+USER_PICKERS = ("team.view", "team.add", "team.edit", "timesheet.view_all", "timesheet.add_all", "approvals.view_all")
+
+
 class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
+    permission_classes = [permissions.IsAuthenticated, ActionPermissions]
     lookup_field = 'id'
+    action_permissions = {
+        "list": USER_PICKERS,
+        "retrieve": USER_PICKERS,
+        "create": "team.add",
+        "update": "team.edit",
+        "partial_update": "team.edit",
+        "destroy": "team.delete",
+        "toggle_active": "team.delete",
+    }
+    action_permission_messages = {
+        "list": "You don't have permission to view users.",
+        "create": "You don't have permission to add users.",
+        "update": "You don't have permission to edit users.",
+        "partial_update": "You don't have permission to edit users.",
+        "destroy": "You don't have permission to remove users.",
+        "toggle_active": "You don't have permission to deactivate users.",
+    }
+
+    def permission_workspace_of(self, target):
+        """The workspace a change to `target` is checked in: the one asked for, else one the caller shares with them."""
+        memberships = WorkspaceMember.objects.filter(user=target)
+        asked = self.request.query_params.get('workspace')
+        if asked:
+            return asked if memberships.filter(workspace_id=asked).exists() else None
+        mine = WorkspaceMember.objects.filter(user=self.request.user, is_active=True).values_list('workspace_id', flat=True)
+        return memberships.filter(workspace_id__in=mine).values_list('workspace_id', flat=True).first()
+
+    def _guard_administrator(self, target):
+        """Changing, deactivating or removing an administrator needs "Manage permissions" (so nobody with only
+        "Edit users" can take over an administrator's account), and nobody removes themselves."""
+        actor = self.request.user
+        if actor.is_superuser:
+            return
+        workspace_id = self.permission_workspace_of(target)
+        if target.pk == actor.pk and self.action in ("destroy", "toggle_active"):
+            raise PermissionDenied("You can't remove or deactivate your own account.")
+        from user_permissions.models import UserPermission
+        is_admin = UserPermission.objects.filter(user=target, workspace_id=workspace_id, group__is_system=True).exists()
+        if is_admin and target.pk != actor.pk and not has_perm(actor, workspace_id, "team.manage_permissions"):
+            raise PermissionDenied("Only someone who manages permissions can change an administrator.")
 
     def paginate_queryset(self, queryset):
         if self.request.query_params.get('pagination') == 'false':
@@ -143,6 +190,7 @@ class UserViewSet(viewsets.ModelViewSet):
         else:
             # Regular users use their own workspace context
             workspace = get_user_primary_workspace(creator)
+        require(creator, workspace.id if workspace else None, "team.add", "You don't have permission to add users.")
 
         # Create new user
         email = serializer.validated_data.get("email").strip().lower()
@@ -172,6 +220,7 @@ class UserViewSet(viewsets.ModelViewSet):
         keep resolving the user and their frozen historical rate/cost data
         untouched — nothing else needs to change for those to keep working.
         """
+        self._guard_administrator(instance)
         admin = self.request.user
         workspace_id = self.request.query_params.get('workspace')
 
@@ -233,6 +282,7 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='toggle-active')
     def toggle_active(self, request, id=None):
         user = self.get_object()
+        self._guard_administrator(user)
         user.is_active = not user.is_active
         user.save()
 
@@ -254,6 +304,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
 
     def perform_update(self, serializer):
+        self._guard_administrator(serializer.instance)
         # Ensure username always matches email
         email = serializer.validated_data.get("email")
         if email:
@@ -271,8 +322,8 @@ class RegisterView(generics.CreateAPIView):
     """
     Create a user + workspace membership (the Team / Organizations "add member" forms).
 
-    Superusers may create users anywhere. Everyone else must be an admin or manager of the workspace they are
-    creating the user in, and only an admin may create another admin.
+    Superusers may create users anywhere. Everyone else needs the "Add users" permission (team.add) in the workspace
+    they are creating the user in, and "Manage permissions" to make them an administrator.
     """
     serializer_class = RegisterSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -282,11 +333,18 @@ class RegisterView(generics.CreateAPIView):
         if not actor.is_superuser:
             workspace_id = serializer.validated_data.get("workspace_id")
             if workspace_id:  # without one, the serializer itself rejects a non-superuser
-                caller_role = get_member_role(actor, workspace_id)
-                if caller_role not in MANAGE_ROLES:
-                    raise PermissionDenied("Only an admin or manager of this workspace can create users.")
-                if serializer.validated_data.get("role", "user") == "admin" and caller_role != "admin":
-                    raise PermissionDenied("Only an admin can create another admin.")
+                from user_permissions.access import has_perm
+                from user_permissions.models import PermissionGroup
+
+                if not has_perm(actor, workspace_id, "team.add"):
+                    raise PermissionDenied("You don't have permission to add users to this workspace.")
+                group_id = serializer.validated_data.get("permission_group")
+                makes_admin = (
+                    PermissionGroup.objects.filter(id=group_id, is_system=True).exists() if group_id
+                    else serializer.validated_data.get("role", "user") == "admin"
+                )
+                if makes_admin and not has_perm(actor, workspace_id, "team.manage_permissions"):
+                    raise PermissionDenied("Only someone who manages permissions can add an administrator.")
 
         user = self.request.user if self.request.user.is_authenticated else None
         new_user = serializer.save()

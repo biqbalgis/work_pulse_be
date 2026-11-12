@@ -5,7 +5,10 @@ from django.db.models.functions import Coalesce
 from .models import Workspace, WorkspaceMember
 from .serializers import WorkspaceSerializer, WorkspaceMemberSerializer
 from core.utils.logger import log_activity
-from .permissions import ADMIN_ONLY, MANAGE_ROLES, get_member_role, has_workspace_role, require_workspace_role
+from .permissions import ADMIN_ONLY, require_workspace_role
+from user_permissions.access import has_perm
+from user_permissions.drf import require
+from user_permissions.models import UserPermission
 
 
 class WorkspaceViewSet(viewsets.ModelViewSet):
@@ -72,7 +75,8 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
         return workspace
 
     def perform_update(self, serializer):
-        require_workspace_role(self.request.user, serializer.instance, ADMIN_ONLY, "Only a workspace admin can change it.")
+        require(self.request.user, serializer.instance.id, "organization.edit",
+                "You don't have permission to change this workspace's settings.")
         serializer.save()
 
     def perform_destroy(self, instance):
@@ -116,13 +120,22 @@ class WorkspaceMemberViewSet(viewsets.ModelViewSet):
         elif group:
             qs = qs.filter(group=group)
 
+        # Each member's permission group (user_permissions), read in the same query.
+        from django.db.models import OuterRef, Subquery
+        from user_permissions.models import UserPermission
+
+        access = UserPermission.objects.filter(user_id=OuterRef("user_id"), workspace_id=OuterRef("workspace_id"))
+        qs = qs.annotate(
+            permission_group_id=Subquery(access.values("group_id")[:1]),
+            permission_group_name=Subquery(access.values("group__name")[:1]),
+        )
         return qs.select_related("user", "workspace")
 
-    # Writes: admins (and managers, for non-admin members) of the member's workspace — never a plain member.
-    # Reads above are unchanged.
+    # Writes need the "Users" permissions in the member's workspace (user_permissions.catalog). A member's role
+    # follows their permission group, changed through /api/user-permissions/, never here.
     def perform_create(self, serializer):
         workspace = serializer.validated_data["workspace"]
-        require_workspace_role(self.request.user, workspace, ADMIN_ONLY, "Only a workspace admin can add members.")
+        require(self.request.user, workspace.id, "team.add", "You don't have permission to add members.")
         serializer.save()
 
     def perform_update(self, serializer):
@@ -136,22 +149,20 @@ class WorkspaceMemberViewSet(viewsets.ModelViewSet):
         ):
             raise PermissionDenied("A membership cannot be moved to another workspace or user.")
 
-        require_workspace_role(actor, member.workspace, MANAGE_ROLES, "Only a workspace admin or manager can edit members.")
-
-        if not actor.is_superuser:
-            caller_role = get_member_role(actor, member.workspace)
-            new_role = data.get("role", member.role)
-            if new_role != member.role:
-                if member.user_id == actor.id:
-                    raise PermissionDenied("You cannot change your own role.")
-                if caller_role != "admin" and (new_role == "admin" or member.role == "admin"):
-                    raise PermissionDenied("Only an admin can grant or change the admin role.")
+        require(actor, member.workspace_id, "team.edit", "You don't have permission to edit members.")
+        if data.get("role", member.role) != member.role:
+            raise PermissionDenied("A member's role follows their permission group. Change their group on the "
+                                   "Permissions page instead.")
         serializer.save()
 
     def perform_destroy(self, instance):
         actor = self.request.user
-        require_workspace_role(actor, instance.workspace, MANAGE_ROLES, "Only a workspace admin or manager can remove members.")
-        if instance.role == "admin" and not has_workspace_role(actor, instance.workspace, ADMIN_ONLY):
-            raise PermissionDenied("Only an admin can remove an admin.")
+        require(actor, instance.workspace_id, "team.delete", "You don't have permission to remove members.")
+        if instance.user_id == actor.id and not actor.is_superuser:
+            raise PermissionDenied("You can't remove yourself from the workspace.")
+        is_admin = UserPermission.objects.filter(user_id=instance.user_id, workspace_id=instance.workspace_id,
+                                                 group__is_system=True).exists()
+        if is_admin and not has_perm(actor, instance.workspace_id, "team.manage_permissions"):
+            raise PermissionDenied("Only someone who manages permissions can remove an administrator.")
         instance.delete()
 

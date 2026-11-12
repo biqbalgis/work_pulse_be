@@ -4,10 +4,10 @@ from rest_framework.exceptions import ValidationError
 from .models import OrganizationAsset
 from .serializers import OrganizationAssetSerializer
 from workspaces.models import WorkspaceMember
-from workspaces.permissions import require_workspace_role
+from user_permissions.drf import require
 
-# Asset rates feed cost calculations, so changing assets is admin/manager-only (reading is unchanged).
-ASSET_WRITE_DENIED = "Only a workspace admin or manager can change assets."
+# Every member reads rates (picked on time and field tickets); adding, changing and removing them needs the rate
+# permissions in their workspace.
 
 
 class OrganizationAssetViewSet(viewsets.ModelViewSet):
@@ -69,18 +69,19 @@ class OrganizationAssetViewSet(viewsets.ModelViewSet):
                 raise ValidationError("You are not part of any workspace.")
             workspace = wm.workspace
 
-        require_workspace_role(user, workspace, message=ASSET_WRITE_DENIED)
+        require(user, workspace.id, "rates.add", "You don't have permission to add rates.")
         serializer.save(workspace=workspace)
 
     def perform_update(self, serializer):
         instance = self.get_object()
         project = serializer.validated_data.get("project", instance.project)
         workspace = project.workspace if project else instance.workspace
-        require_workspace_role(self.request.user, instance.workspace, message=ASSET_WRITE_DENIED)
+        message = "You don't have permission to edit rates."
+        require(self.request.user, instance.workspace_id, "rates.edit", message)
         if workspace.pk != instance.workspace_id:
-            require_workspace_role(self.request.user, workspace, message=ASSET_WRITE_DENIED)
+            require(self.request.user, workspace.pk, "rates.edit", message)
         serializer.save(workspace=workspace)
 
     def perform_destroy(self, instance):
-        require_workspace_role(self.request.user, instance.workspace, message=ASSET_WRITE_DENIED)
+        require(self.request.user, instance.workspace_id, "rates.delete", "You don't have permission to delete rates.")
         instance.delete()

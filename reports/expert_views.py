@@ -41,7 +41,7 @@ from core.utils import pay_rules
 from projects.models import Project
 from time_entries.models import TimeEntry
 from workspaces.models import WorkspaceMember
-from workspaces.permissions import ADMIN_ONLY, MANAGE_ROLES, has_workspace_role
+from user_permissions.access import has_perm
 
 from projects.archive import before_archive, tickets_before_archive
 from .models import LEMReport
@@ -115,7 +115,7 @@ def usage_cost(usage, entry):
 class Filters:
     """The report's filters, read once from the query string, and the querysets they narrow."""
 
-    def __init__(self, request, roles):
+    def __init__(self, request, code):
         user = request.user
         workspace_id = request.query_params.get("workspace")
         memberships = WorkspaceMember.objects.filter(user=user, is_deleted=False, is_active=True)
@@ -123,11 +123,11 @@ class Filters:
             if not (user.is_superuser or memberships.filter(workspace_id=workspace_id).exists()):
                 raise ExpertReportError("Workspace not found.", 404)
         else:
-            membership = memberships.filter(role__in=roles).first() or memberships.first()
-            if not membership:
+            ids = list(memberships.values_list("workspace_id", flat=True))
+            if not ids:
                 raise ExpertReportError("You are not in a workspace.", 403)
-            workspace_id = membership.workspace_id
-        if not has_workspace_role(user, workspace_id, roles):
+            workspace_id = next((ws for ws in ids if has_perm(user, ws, code)), ids[0])
+        if not has_perm(user, workspace_id, code):
             raise ExpertReportError("You do not have access to this report.", 403)
         self.workspace_id = workspace_id
 
@@ -202,11 +202,12 @@ class Filters:
 
 class _ExpertView(APIView):
     permission_classes = [IsAuthenticated]
-    roles = MANAGE_ROLES
+    # The permission each part of the Expert report needs (user_permissions.catalog).
+    code = "reports.expert"
 
     def get(self, request):
         try:
-            filters = Filters(request, self.roles)
+            filters = Filters(request, self.code)
             return self.build(request, filters)
         except ExpertReportError as exc:
             return Response({"error": str(exc)}, status=exc.status)
@@ -226,7 +227,8 @@ class ExpertOptionsView(_ExpertView):
         )
         return Response({
             "workspace": str(ws),
-            "is_admin": has_workspace_role(request.user, ws, ADMIN_ONLY),
+            # Shows the Profitability tab.
+            "is_admin": has_perm(request.user, ws, "reports.profitability"),
             "projects": [
                 {"id": str(p.id), "name": p.name, "code": p.job_code or "", "client_id": str(p.client_id) if p.client_id else None,
                  "billable": p.billable,
@@ -352,7 +354,7 @@ class ExpertOverviewView(_ExpertView):
 class ExpertProfitabilityView(_ExpertView):
     """Rate vs cost of the crew rates and equipment charged on billable work, by job, employee and item. Admins only."""
 
-    roles = ADMIN_ONLY
+    code = "reports.profitability"
 
     def build(self, request, filters):
         jobs = {}

@@ -6,33 +6,35 @@ from core.utils.pay_rules import DT_MULTIPLIER, OT_MULTIPLIER, entry_day, split_
 from workspaces.models import WorkspaceMember
 
 
-def can_approve(request_user, target_user, workspace):
-    """
-    Final Rules:
-     - Superuser can approve anyone.
-     - If employee has manager -> manager, admin, or superuser can approve.
-     - If no manager -> admin or superuser can approve.
-    """
+def approval_decision(request_user, workspace_id, employee_id, employee_manager_id, approver_member):
+    """The rule behind can_approve, from already-loaded facts (list pages answer it for many rows at once).
 
-    # Superuser bypass
+     - Superusers may approve anyone.
+     - Otherwise the approver must be an active member of the workspace, and either have "Approve / reject time"
+       (approvals.approve) there, or be that employee's assigned approver.
+     - Nobody approves their own time, except administrators (full access).
+    """
+    from user_permissions.access import has_perm
+
     if request_user.is_superuser:
         return True
+    if approver_member is None or not approver_member.is_active:
+        return False
+    if employee_id == request_user.id:
+        return has_perm(request_user, workspace_id, "team.manage_permissions")
+    return has_perm(request_user, workspace_id, "approvals.approve") or employee_manager_id == request_user.id
 
-    # Must belong to the same workspace
-    approver = WorkspaceMember.objects.filter(user=request_user, workspace=workspace).first()
-    employee = WorkspaceMember.objects.filter(user=target_user, workspace=workspace).first()
 
+def can_approve(request_user, target_user, workspace):
+    """May `request_user` approve / reject `target_user`'s time in `workspace`? (see approval_decision)"""
+    if request_user.is_superuser:
+        return True
+    workspace_id = getattr(workspace, "pk", workspace)
+    approver = WorkspaceMember.objects.filter(user=request_user, workspace_id=workspace_id).first()
+    employee = WorkspaceMember.objects.filter(user=target_user, workspace_id=workspace_id).first()
     if not approver or not employee:
         return False
-
-    # CASE 1: Employee has a manager
-    if employee.manager:
-        if employee.manager == request_user or approver.role == "admin":
-            return True
-        return False
-
-    # CASE 2: Employee has NO manager -> Only admin can approve
-    return approver.role == "admin"
+    return approval_decision(request_user, workspace_id, employee.user_id, employee.manager_id, approver)
 
 
 def get_week_bounds(date):

@@ -1,3 +1,5 @@
+from reports import access as report_access
+from django.db.models import Q
 from datetime import datetime, timedelta
 
 from django.http import FileResponse
@@ -118,9 +120,10 @@ def generate_lem_pdf(report):
     return buffer
 
 class WeeklyPayrollReport(APIView):
-    permission_classes = [IsAuthenticated,IsWorkspaceManager | IsSuperUser]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        report_access.require_some(request.user, "reports.payroll_export")
         from_date = request.data.get("from")
         to_date = request.data.get("to")
 
@@ -135,10 +138,10 @@ class WeeklyPayrollReport(APIView):
 
         # Aggregate hours by user across the whole week
         weekly_entries = (
-            TimeEntry.objects.filter(
+            report_access.scope(TimeEntry.objects.filter(
                 start_time__date__range=[from_date, to_date],
                 project_id__in=active_project_ids
-            )
+            ), request.user, "reports.payroll_export")
             .values("user_id", "user__first_name", "user__last_name")
             .annotate(total_minutes=Sum("duration"))
         )
@@ -193,13 +196,10 @@ class DailyRTOTReport(APIView):
             project_id__in=active_ids
         )
 
-        # 4) Role check (admin/superuser can see all, normal user only see own)
-        is_admin_or_super = user.is_superuser or WorkspaceMember.objects.filter(
-            user=user, role="admin"
-        ).exists()
-
-        if not is_admin_or_super:
-            base_query = base_query.filter(user=user)
+        # 4) Their own hours, plus everyone's in workspaces where they may open reports.
+        report_ws = report_access.report_workspaces(user, "reports.view")
+        if report_ws is not None:
+            base_query = base_query.filter(Q(user=user) | Q(workspace_id__in=report_ws))
 
         # 5) Group and summarize
         entries = (
@@ -257,11 +257,11 @@ class DailyDetailView(APIView):
         date = datetime.strptime(date, "%Y-%m-%d").date()
 
 
-        # Fetch ALL entries for that date
-        entries = list(TimeEntry.objects.filter(
-            user_id=employee_id,
-            start_time__date=date
-        ).select_related("project", "job_title").order_by("start_time"))
+        # Fetch ALL entries for that date (someone else's only where the caller may open reports)
+        day_entries = TimeEntry.objects.filter(user_id=employee_id, start_time__date=date)
+        if str(employee_id) != str(request.user.id):
+            day_entries = report_access.scope(day_entries, request.user, "reports.view")
+        entries = list(day_entries.select_related("project", "job_title").order_by("start_time"))
 
         # Calculate approval status map
         approval_map = {
@@ -324,6 +324,7 @@ class EmployeePayrollDashboard(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        report_access.require_some(request.user, "reports.payroll_export")
         period = request.GET.get("period", "week")
         start = request.GET.get("start")
         end = request.GET.get("end")
@@ -344,10 +345,11 @@ class EmployeePayrollDashboard(APIView):
             end = datetime.strptime(end, "%Y-%m-%d").date()
 
         # Fetch only APPROVED items
-        items = TimeEntryApprovalItem.objects.filter(
+        items = report_access.scope(TimeEntryApprovalItem.objects.filter(
             approval__status="approved",
             time_entry__start_time__date__range=[start, end]
-        ).select_related("time_entry__user", "time_entry__project")
+        ), request.user, "reports.payroll_export", "time_entry__workspace_id").select_related(
+            "time_entry__user", "time_entry__project")
 
         # Group by employee
         employees = {}
@@ -451,11 +453,11 @@ class DailyDetailView(APIView):
         # Parse date
         date = datetime.strptime(date, "%Y-%m-%d").date()
 
-        # Fetch ALL entries for that date
-        entries = list(TimeEntry.objects.filter(
-            user_id=employee_id,
-            start_time__date=date
-        ).select_related("project", "job_title").order_by("start_time"))
+        # Fetch ALL entries for that date (someone else's only where the caller may open reports)
+        day_entries = TimeEntry.objects.filter(user_id=employee_id, start_time__date=date)
+        if str(employee_id) != str(request.user.id):
+            day_entries = report_access.scope(day_entries, request.user, "reports.view")
+        entries = list(day_entries.select_related("project", "job_title").order_by("start_time"))
 
         # Calculate approval status map
         approval_map = {
@@ -518,6 +520,7 @@ class EmployeePayrollDashboard(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        report_access.require_some(request.user, "reports.payroll_export")
         period = request.GET.get("period", "week")
         start = request.GET.get("start")
         end = request.GET.get("end")
@@ -538,10 +541,11 @@ class EmployeePayrollDashboard(APIView):
             end = datetime.strptime(end, "%Y-%m-%d").date()
 
         # Fetch only APPROVED items
-        items = TimeEntryApprovalItem.objects.filter(
+        items = report_access.scope(TimeEntryApprovalItem.objects.filter(
             approval__status="approved",
             time_entry__start_time__date__range=[start, end]
-        ).select_related("time_entry__user", "time_entry__project")
+        ), request.user, "reports.payroll_export", "time_entry__workspace_id").select_related(
+            "time_entry__user", "time_entry__project")
 
         # Group by employee
         employees = {}
@@ -618,8 +622,9 @@ class DailyWorkReportView(APIView):
         if project_id:
             filters["project_id"] = project_id
 
-        # Fetch Time Entries with related data
-        time_entries = TimeEntry.objects.filter(**filters).select_related(
+        # Fetch Time Entries with related data (only workspaces where they may open reports)
+        report_access.require_some(request.user, "reports.view")
+        time_entries = report_access.scope(TimeEntry.objects.filter(**filters), request.user, "reports.view").select_related(
             "user", "job_title", "project"
         ).prefetch_related("asset_usages", "asset_usages__asset").order_by("start_time")
 
@@ -818,6 +823,7 @@ class LEMReportGenerationView(APIView):
             project = Project.objects.get(id=project_id)
         except Project.DoesNotExist:
              return Response({"error": "Project not found"}, status=404)
+        report_access.require_project(request.user, project, "reports.view")
 
         existing_lem = LEMReport.objects.filter(
             project=project,
@@ -960,6 +966,7 @@ class LEMDailyReportView(APIView):
             return Response({"error": "Invalid date"}, status=400)
 
         project = get_object_or_404(Project, id=project_id)
+        report_access.require_project(request.user, project, "reports.view")
 
         entries = (
             TimeEntry.objects
@@ -1046,7 +1053,8 @@ from .cost_calculator import CostCalculator
 from .pdf_utils import generate_costing_lem_pdf
 
 class LEMCostingReportView(APIView):
-    permission_classes = [IsAuthenticated, IsWorkspaceManager]
+    # "Open reports" in the project's workspace (checked in post).
+    permission_classes = [IsAuthenticated, IsWorkspaceUser]
 
     def post(self, request):
         date_str = request.data.get("date")
@@ -1066,6 +1074,7 @@ class LEMCostingReportView(APIView):
             return Response({"error": "Invalid date"}, status=400)
 
         project = get_object_or_404(Project, id=project_id)
+        report_access.require_project(request.user, project, "reports.view")
 
         # 1. Identify Users working on this Project on this Date
         daily_entries = TimeEntry.objects.filter(
@@ -1177,7 +1186,7 @@ class LEMCostingReportView(APIView):
         )
 
 class TimeEntryExcelReportView(APIView):
-    permission_classes = [IsAuthenticated, IsWorkspaceManager | IsSuperUser]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         from_date_str = request.data.get("from")
@@ -1192,6 +1201,12 @@ class TimeEntryExcelReportView(APIView):
             end_date = datetime.strptime(to_date_str, "%Y-%m-%d").date()
         except ValueError:
             return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+
+        if project_id:
+            project = get_object_or_404(Project, id=project_id)
+            report_access.require_project(request.user, project, "reports.payroll_export")
+        elif not request.user.is_superuser:
+            return Response({"error": "Choose a project."}, status=400)
 
         try:
             excel_file = generate_time_entry_report(start_date, end_date, project_id)

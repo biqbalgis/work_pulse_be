@@ -1,13 +1,17 @@
 from rest_framework import viewsets, permissions, serializers
 from .models import Tag
 from .serializers import TagSerializer
-from workspaces.permissions import IsWorkspaceManager, IsSuperUser
+from user_permissions.drf import ActionPermissions, require
 from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
 from core.utils.logger import log_activity
 
 class TagViewSet(viewsets.ModelViewSet):
     serializer_class = TagSerializer
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
+    # Tags label projects' time, so managing them goes with editing projects.
+    permission_classes = [permissions.IsAuthenticated, ActionPermissions]
+    action_permissions = {
+        "update": "projects.edit", "partial_update": "projects.edit", "destroy": "projects.edit",
+    }
 
     def paginate_queryset(self, queryset):
         if self.request.query_params.get('pagination') == 'false':
@@ -21,5 +25,7 @@ class TagViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         workspace = get_user_primary_workspace(self.request.user)
+        require(self.request.user, workspace.id if workspace else None, "projects.edit",
+                "You don't have permission to add tags.")
         instance = serializer.save(workspace=workspace)
         log_activity(self.request.user, "CREATE", "Tag", instance.id,request=self.request)

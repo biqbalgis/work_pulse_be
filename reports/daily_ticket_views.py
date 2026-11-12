@@ -78,10 +78,10 @@ class DailyTicketDownloadListView(APIView):
         user = request.user
         qs = DailyTicketDownload.objects.select_related("downloaded_by", "workspace").order_by("-downloaded_at")
         if not user.is_superuser:
-            admin_workspace_ids = WorkspaceMember.objects.filter(
-                user=user, role="admin", is_active=True,
-            ).values_list("workspace_id", flat=True)
-            qs = qs.filter(workspace_id__in=admin_workspace_ids)
+            # Blank tickets handed out in workspaces where they see all field tickets.
+            from user_permissions.access import workspaces_with
+
+            qs = qs.filter(workspace_id__in=workspaces_with(user, "field_tickets.view_all") or set())
 
         rows = [
             {

@@ -3,13 +3,23 @@ from .models import Task
 from .serializers import TaskSerializer
 from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
-from workspaces.permissions import IsWorkspaceManager, IsSuperUser, IsWorkspaceAdminOrSuperUser
+from user_permissions.drf import ActionPermissions, require
 
 
 class TaskViewSet(viewsets.ModelViewSet):
     serializer_class = TaskSerializer
-    # permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdminOrSuperUser]
+    # Every member reads tasks (time and field ticket forms); tasks are part of a project, so adding or changing
+    # them needs "Edit projects" (or "Add projects") and removing them "Delete projects", in the project's workspace.
+    permission_classes = [permissions.IsAuthenticated, ActionPermissions]
+    action_permissions = {
+        "update": ("projects.edit", "projects.add"),
+        "partial_update": ("projects.edit", "projects.add"),
+        "destroy": "projects.delete",
+    }
+
+    @staticmethod
+    def permission_workspace_of(task):
+        return task.project.workspace_id
 
     def get_queryset(self):
         queryset = Task.objects.filter(is_deleted=False, is_active=True)
@@ -56,6 +66,9 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
+        project = serializer.validated_data.get("project")
+        require(user, project.workspace_id if project else None, ("projects.edit", "projects.add"),
+                "You don't have permission to add tasks to this project.")
         instance = serializer.save()
         log_activity(user, "CREATE", "Task", instance.id,request=self.request)
 

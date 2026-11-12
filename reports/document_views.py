@@ -16,7 +16,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from workspaces.permissions import ADMIN_ONLY, has_workspace_role
+from user_permissions.access import has_perm
 from .document_models import LEMDocument
 from .documents import document_json, save_upload
 from .envision_views import _can_change_lem_status, _can_view_lem, _find_field_ticket_lem
@@ -42,9 +42,17 @@ def _can_open(user, document):
     if document.lem_id:
         return _can_view_lem(user, document.lem)
     invoice = document.invoice
-    if has_workspace_role(user, invoice.workspace_id, ADMIN_ONLY):
+    if has_perm(user, invoice.workspace_id, "field_tickets.view_all"):
         return True
     return any(_can_view_lem(user, lem) for lem in invoice.tickets.filter(is_deleted=False).select_related("project"))
+
+
+def _workspace_id(lem):
+    return lem.project.workspace_id if lem.project_id else None
+
+
+def _may_upload(user, lem):
+    return has_perm(user, _workspace_id(lem), "field_tickets.upload_documents")
 
 
 def _workspace_of(document):
@@ -64,9 +72,13 @@ class LEMDocumentsView(APIView):
             "lem_number": lem.lem_number,
             "ticket_number": lem.ticket_number,
             "status": lem.status,
-            "can_upload_verification": lem.status in VERIFIABLE_STATUSES and _can_change_lem_status(request.user, lem),
-            # From the Documents dialog approvers may add any type; Approved LEM only once the ticket is approved.
-            "can_upload": _can_change_lem_status(request.user, lem),
+            # The Approved LEM: whoever accepts tickets, or uploads documents, once it's approved.
+            "can_upload_verification": lem.status in VERIFIABLE_STATUSES and (
+                _may_upload(request.user, lem) or _can_change_lem_status(request.user, lem)
+            ),
+            # From the Documents dialog: any type; Approved LEM only once the ticket is approved.
+            "can_upload": _may_upload(request.user, lem),
+            "can_delete": has_perm(request.user, _workspace_id(lem), "field_tickets.delete_documents"),
             "document_types": [
                 {"value": value, "label": label,
                  "allowed": value != LEMDocument.TYPE_APPROVED_LEM or lem.status in VERIFIABLE_STATUSES}
@@ -82,8 +94,10 @@ class LEMDocumentsView(APIView):
         document_type = request.data.get("document_type") or LEMDocument.TYPE_APPROVED_LEM
         if document_type not in dict(LEMDocument.DOCUMENT_TYPE_CHOICES):
             raise ValidationError("Choose the document type: LEM, Approved LEM, Invoice or Others.")
-        if not _can_change_lem_status(request.user, lem):
-            return Response({"error": "Only people who approve field tickets can add documents to them."}, status=403)
+        # Uploading needs "Upload documents"; whoever accepts tickets may also add the Approved LEM when approving.
+        may_upload = _may_upload(request.user, lem)
+        if not may_upload and not (document_type == LEMDocument.TYPE_APPROVED_LEM and _can_change_lem_status(request.user, lem)):
+            return Response({"error": "You don't have permission to upload documents to field tickets."}, status=403)
         if document_type == LEMDocument.TYPE_APPROVED_LEM and lem.status not in VERIFIABLE_STATUSES:
             raise ValidationError(f"{lem.ticket_number} isn't approved yet. Add the Approved LEM once it's approved.")
         document = save_upload(request.FILES.get("file"), LEMDocument.VERIFICATION, request.user, lem=lem,
@@ -119,7 +133,7 @@ class DocumentDetailView(APIView):
         if document.kind not in LEMDocument.UPLOADED_KINDS:
             raise ValidationError("Issued field ticket PDFs are kept as the record and can't be removed.")
         workspace_id = _workspace_of(document)
-        if not (request.user.is_superuser or (workspace_id and has_workspace_role(request.user, workspace_id, ADMIN_ONLY))):
-            return Response({"error": "Only workspace admins can remove documents."}, status=403)
+        if not (workspace_id and has_perm(request.user, workspace_id, "field_tickets.delete_documents")):
+            return Response({"error": "You don't have permission to remove documents."}, status=403)
         document.delete()  # soft delete: the file stays in S3, out of the lists
         return Response(status=204)

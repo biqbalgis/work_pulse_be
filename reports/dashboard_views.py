@@ -30,7 +30,8 @@ from organization_asset.models import AssetUsage
 from projects.models import Project
 from time_entries.models import TimeEntry
 from workspaces.models import WorkspaceMember
-from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser
+from rest_framework.exceptions import PermissionDenied
+from user_permissions.access import has_perm
 
 from projects.archive import before_archive, tickets_before_archive
 from .models import LEMReport
@@ -38,14 +39,21 @@ from .models import LEMReport
 FIELD_TICKET_LEM_PREFIX = "FT"  # matches both the "FT-" and "FTF-" series
 
 
-def _resolve_workspace_ids(request):
+def _resolve_workspace_ids(request, code=None):
+    """The workspaces the dashboard covers: the caller's (a superuser picks one with ?workspace=). With `code`,
+    only those where they have that permission — 403 if none."""
     user = request.user
     if user.is_superuser:
         workspace_id = request.GET.get("workspace")
         if not workspace_id:
             raise ValidationError({"workspace": "Workspace parameter is required for superusers."})
         return [workspace_id]
-    return list(get_user_workspace_ids(user))
+    workspace_ids = list(get_user_workspace_ids(user))
+    if code:
+        workspace_ids = [ws for ws in workspace_ids if has_perm(user, ws, code)]
+        if not workspace_ids:
+            raise PermissionDenied("You don't have permission to see the whole workspace on the dashboard.")
+    return workspace_ids
 
 
 def _resolve_date_range(request):
@@ -81,11 +89,10 @@ class DashboardSummaryView(APIView):
         workspace_ids = _resolve_workspace_ids(request)
         start, end = get_week_bounds(timezone.localdate())
 
-        is_admin = user.is_superuser or WorkspaceMember.objects.filter(
-            user=user, workspace_id__in=workspace_ids, is_deleted=False, role__in=["admin", "manager"],
-        ).exists()
-
-        if not is_admin:
+        # The whole-workspace view where they may see it (dashboard.view_all); otherwise just their own week.
+        if not user.is_superuser:
+            workspace_ids = [ws for ws in workspace_ids if has_perm(user, ws, "dashboard.view_all")]
+        if not workspace_ids:
             return Response(self._member_summary(user, start, end))
 
         week_qs = before_archive(TimeEntry.objects).filter(
@@ -182,10 +189,10 @@ class DashboardSummaryView(APIView):
 class DashboardHoursByProjectView(APIView):
     """GET /api/reports/dashboard/hours-by-project/ — admin only, filterable pie-chart data."""
 
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        workspace_ids = _resolve_workspace_ids(request)
+        workspace_ids = _resolve_workspace_ids(request, "dashboard.view_all")
         start, end = _resolve_date_range(request)
 
         qs = before_archive(TimeEntry.objects).filter(
@@ -217,10 +224,10 @@ class DashboardHoursByProjectView(APIView):
 class DashboardFieldTicketsView(APIView):
     """GET /api/reports/dashboard/field-tickets/ — admin only, filterable bar-chart data."""
 
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        workspace_ids = _resolve_workspace_ids(request)
+        workspace_ids = _resolve_workspace_ids(request, "dashboard.view_all")
         start, end = _resolve_date_range(request)
 
         lem_qs = tickets_before_archive(LEMReport.objects).filter(
@@ -274,10 +281,10 @@ class DashboardFieldTicketsView(APIView):
 class DashboardAssetCostsView(APIView):
     """GET /api/reports/dashboard/asset-costs/ — admin only, per-project asset cost breakdown."""
 
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        workspace_ids = _resolve_workspace_ids(request)
+        workspace_ids = _resolve_workspace_ids(request, "dashboard.view_all")
         start, end = _resolve_date_range(request)
 
         qs = before_archive(AssetUsage.objects, prefix="time_entry__").filter(

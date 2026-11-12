@@ -6,7 +6,8 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from user_permissions.models import UserPermission
+from user_permissions.access import has_perm
+from workspaces.models import WorkspaceMember
 from .models import Notification
 
 
@@ -82,11 +83,13 @@ def _ticket_people(lem):
 
 
 def _ticket_approvers(lem):
-    """Everyone who approves field tickets in the ticket's workspace."""
+    """Everyone who accepts / rejects field tickets in the ticket's workspace (the field_tickets.approve permission)."""
     if not lem.project_id:
         return []
-    return [p.user for p in UserPermission.objects.filter(workspace_id=lem.project.workspace_id, lem_approval=True)
-            .select_related("user")]
+    workspace_id = lem.project.workspace_id
+    members = (WorkspaceMember.objects.filter(workspace_id=workspace_id, is_active=True, user__is_active=True)
+               .select_related("user"))
+    return [m.user for m in members if has_perm(m.user, workspace_id, "field_tickets.approve")]
 
 
 def notify_ticket(lem, actor, kind, note=""):

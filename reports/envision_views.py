@@ -41,10 +41,11 @@ from time_entries.field_ticket_views import (
 from time_entries.models import TimeEntry
 from time_entries.serializers import FieldTicketEntrySerializer
 from workspaces.models import WorkspaceMember
-from workspaces.permissions import ADMIN_ONLY, IsWorkspaceUser, has_workspace_role
+from workspaces.permissions import IsWorkspaceUser
+from user_permissions.access import workspaces_with
 from .models import Invoice, LEMDocument, LEMReport, LEMRevision, LEMStatusEvent, format_display_number, split_year_prefix
 from .documents import document_json, save_upload, store_ticket_pdf, validate_upload
-from user_permissions.models import UserPermission
+from user_permissions.access import has_perm
 from notifications.models import Notification
 from notifications.notify import notify_ticket
 from core.utils.pay_rules import entry_day, reprice_days
@@ -241,6 +242,9 @@ class EnvisionLEMReportView(APIView):
             project = Project.objects.select_related("client", "workspace").get(id=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found"}, status=404)
+
+        if not has_perm(request.user, project.workspace_id, "field_tickets.add"):
+            return Response({"error": "You don't have permission to create field tickets in this workspace."}, status=403)
 
         try:
             task = Task.objects.get(id=task_id, project=project)
@@ -445,6 +449,9 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
         except Project.DoesNotExist:
             return Response({"error": "Project not found"}, status=404)
 
+        if not has_perm(request.user, project.workspace_id, "field_tickets.add"):
+            return Response({"error": "You don't have permission to create field tickets in this workspace."}, status=403)
+
         try:
             task = Task.objects.get(id=task_id, project=project)
         except Task.DoesNotExist:
@@ -627,8 +634,12 @@ class EnvisionFieldTicketListView(APIView):
             .annotate(effective_date=Coalesce("lem_date", TruncDate("created_at")))
         )
 
-        # Workspaces where this user may revise and delete tickets: the ones they admin (None = all, for superusers).
-        self._revise_workspace_ids = None if user.is_superuser else _lem_admin_workspace_ids(user)
+        # Workspaces where this user may revise / void / invoice / upload to tickets (None = all, for superusers).
+        self._allowed = None if user.is_superuser else {
+            code: _ticket_workspaces(user, code)
+            for code in ("field_tickets.revise", "field_tickets.delete", "field_tickets.invoice",
+                         "field_tickets.upload_documents")
+        }
         # ... and where they may mark tickets approved / rejected.
         self._status_workspace_ids = _lem_status_workspace_ids(user)
 
@@ -713,32 +724,33 @@ class EnvisionFieldTicketListView(APIView):
                 counts[lem.id][LEMDocument.TYPE_INVOICE] += by_invoice.get(lem.invoice_id, 0)
         return counts
 
+    def _may(self, lem, code):
+        return self._allowed is None or (bool(lem.project_id) and lem.project.workspace_id in self._allowed[code])
+
     def _base_fields(self, lem):
         locked = lem.status == LEMReport.STATUS_INVOICED
-        is_admin = self._revise_workspace_ids is None or lem.project.workspace_id in self._revise_workspace_ids
+        may_decide = self._status_workspace_ids is None or lem.project.workspace_id in self._status_workspace_ids
         return {
             "id": lem.id,
             "lem_number": lem.lem_number,
             "revision": lem.revision,
             "display_number": lem.ticket_number,
-            "can_revise": not locked and lem.lem_number.startswith(REVISABLE_PREFIX) and is_admin,
-            "can_delete": not locked and is_admin,
-            # Admins mark approved tickets invoiced (see EnvisionLEMInvoiceView); invoicing locks the ticket.
-            "can_invoice": is_admin and lem.status == LEMReport.STATUS_APPROVED,
+            "can_revise": not locked and lem.lem_number.startswith(REVISABLE_PREFIX) and self._may(lem, "field_tickets.revise"),
+            "can_delete": not locked and self._may(lem, "field_tickets.delete"),
+            # Approved tickets are marked invoiced (see EnvisionLEMInvoiceView); invoicing locks the ticket.
+            "can_invoice": lem.status == LEMReport.STATUS_APPROVED and self._may(lem, "field_tickets.invoice"),
             "locked": locked,
             "invoiced_on": lem.invoiced_on,
             "invoice_number": lem.invoice_number,
             # Documents kept with it (S3): verification documents on the ticket, files on its invoice.
             "document_counts": getattr(self, "_document_counts", {}).get(lem.id, {}),
             "can_upload_verification": lem.status in (LEMReport.STATUS_APPROVED, LEMReport.STATUS_INVOICED) and bool(lem.project_id) and (
-                self._status_workspace_ids is None or lem.project.workspace_id in self._status_workspace_ids
+                may_decide or self._may(lem, "field_tickets.upload_documents")
             ),
             "template": lem.template or DEFAULT_TEMPLATE,
             "template_label": dict(LEMReport.TEMPLATE_CHOICES)[lem.template or DEFAULT_TEMPLATE],
             **_lem_status_fields(lem),
-            "can_change_status": not locked and bool(lem.project_id) and (
-                self._status_workspace_ids is None or lem.project.workspace_id in self._status_workspace_ids
-            ),
+            "can_change_status": not locked and bool(lem.project_id) and may_decide,
             "project_name": lem.project.name if lem.project else "-",
             "client_name": lem.project.client.name if lem.project and lem.project.client else "",
             "non_billable": bool(lem.project and not lem.project.billable),
@@ -986,15 +998,8 @@ class EnvisionLEMVoidView(APIView):
 
         workspace = lem_report.project.workspace
         user = request.user
-        if not user.is_superuser:
-            is_elevated = WorkspaceMember.objects.filter(
-                user=user, workspace=workspace, role__in=self.ELEVATED_ROLES
-            ).exists()
-            if not is_elevated:
-                return Response(
-                    {"error": "You do not have permission to void LEMs in this workspace."},
-                    status=403,
-                )
+        if not has_perm(user, workspace.id, "field_tickets.delete"):
+            return Response({"error": "You don't have permission to void field tickets in this workspace."}, status=403)
 
         # Exactly the entries recorded against this LEM — not a re-query by
         # project/task/date, which would also catch entries from other LEMs
@@ -1096,27 +1101,16 @@ def _find_field_ticket_lem(raw, user):
     return lems.filter(lem_number=f"FTF-{raw}").first()
 
 
-def _ticket_access(user):
-    """(memberships as (workspace_id, role, is_active), workspaces with the "Approve / reject field tickets"
-    permission) for `user`: read once per request, since one request asks several of the questions below."""
-    def load():
-        members = list(WorkspaceMember.objects.filter(user=user).values_list("workspace_id", "role", "is_active"))
-        granted = set(UserPermission.objects.filter(user=user, lem_approval=True).values_list("workspace_id", flat=True))
-        return members, granted
-    return request_cache.remember(("ticket_access", user.pk), load)
-
-
-def _lem_admin_workspace_ids(user):
-    """Workspaces `user` actively admins: where they may revise and delete field tickets."""
-    members, _granted = _ticket_access(user)
-    return {workspace_id for workspace_id, role, active in members if role == "admin" and active}
+def _ticket_workspaces(user, code):
+    """Workspaces where `user` has field ticket permission `code` (read once per request; superusers are handled by
+    the callers)."""
+    return request_cache.remember(("ticket_workspaces", user.pk, code), lambda: set(workspaces_with(user, code) or set()))
 
 
 def _lem_viewer_workspace_ids(user):
-    """Workspaces where `user` sees every field ticket, not just their own: those they admin, and those where
-    they have the "Approve / reject field tickets" permission (they need the tickets to decide on them)."""
-    members, granted = _ticket_access(user)
-    return {workspace_id for workspace_id, role, _active in members if role in FIELD_TICKET_ADMIN_ROLES} | granted
+    """Workspaces where `user` sees every field ticket, not just their own: where they may view all tickets or
+    accept / reject them (they need the tickets to decide on them)."""
+    return _ticket_workspaces(user, "field_tickets.view_all") | _ticket_workspaces(user, "field_tickets.approve")
 
 
 def _can_view_lem(user, lem):
@@ -1130,7 +1124,7 @@ def _lem_status_workspace_ids(user):
     workspace admins, and anyone given the "Approve / reject field tickets" permission there."""
     if user.is_superuser:
         return None
-    return _lem_admin_workspace_ids(user) | _ticket_access(user)[1]
+    return _ticket_workspaces(user, "field_tickets.approve")
 
 
 def _can_change_lem_status(user, lem):
@@ -1193,11 +1187,11 @@ NOT_REVISABLE_MESSAGE = "Only Field Ticket LEMs can be revised (not Daily LEM or
 
 
 def _can_revise_lem(user, lem):
-    """Workspace admins of the ticket's workspace and superusers; Field Ticket LEMs (FTF-) only — never the
-    Daily LEM (FT-), Costing (CT-) or generic (LEM-) series."""
+    """People with "Edit / revise field tickets" in the ticket's workspace, and superusers; Field Ticket LEMs (FTF-)
+    only — never the Daily LEM (FT-), Costing (CT-) or generic (LEM-) series."""
     if not lem.lem_number.startswith(REVISABLE_PREFIX) or not lem.project_id:
         return False
-    return has_workspace_role(user, lem.project.workspace_id, ADMIN_ONLY)
+    return has_perm(user, lem.project.workspace_id, "field_tickets.revise")
 
 
 def _sum_labour_hours(report_data):
@@ -1620,6 +1614,8 @@ class _EnvisionCostingLEMDataMixin:
             project = Project.objects.select_related("client", "workspace").get(id=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found"}, status=404), None
+        if not has_perm(request.user, project.workspace_id, "reports.view"):
+            return Response({"error": "You don't have permission to open reports."}, status=403), None
 
         workspace = project.workspace
 
@@ -1938,8 +1934,8 @@ class EnvisionLEMInvoiceView(APIView):
             lem = _find_field_ticket_lem(str(raw), request.user)
             if not lem:
                 return Response({"error": f"Field ticket {raw} not found."}, status=404)
-            if not has_workspace_role(request.user, lem.project.workspace_id, ADMIN_ONLY):
-                return Response({"error": "Only workspace admins can mark tickets invoiced."}, status=403)
+            if not has_perm(request.user, lem.project.workspace_id, "field_tickets.invoice"):
+                return Response({"error": "You don't have permission to mark field tickets invoiced."}, status=403)
             if lem.status == LEMReport.STATUS_INVOICED:
                 return Response({"error": f"{lem.ticket_number} is already invoiced."}, status=400)
             if lem.status != LEMReport.STATUS_APPROVED:

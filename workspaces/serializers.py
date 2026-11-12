@@ -43,6 +43,9 @@ class WorkspaceMemberSerializer(serializers.ModelSerializer):
         choices=WorkspaceMember.GROUP_CHOICES, required=False, allow_null=True, allow_blank=True,
     )
     group_label = serializers.SerializerMethodField()
+    # Their permission group (user_permissions.PermissionGroup); changed through /api/user-permissions/.
+    permission_group = serializers.SerializerMethodField()
+    permission_group_name = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkspaceMember
@@ -53,10 +56,19 @@ class WorkspaceMemberSerializer(serializers.ModelSerializer):
             'role',
             'group',
             'group_label',
+            'permission_group',
+            'permission_group_name',
             'manager',
             'user_email',
             'user_name',
         ]
+
+    def get_permission_group(self, obj):
+        value = getattr(obj, "permission_group_id", None)
+        return str(value) if value else None
+
+    def get_permission_group_name(self, obj):
+        return getattr(obj, "permission_group_name", None) or ""
 
     def get_group_label(self, obj):
         return obj.get_group_display() if obj.group else None
@@ -74,15 +86,12 @@ class WorkspaceMemberSerializer(serializers.ModelSerializer):
             request = self.context.get("request")
             target_ws = workspace or (self.instance.workspace if self.instance else None)
             actor = request.user if request else None
-            is_admin = bool(
-                actor and target_ws and (
-                    actor.is_superuser
-                    or WorkspaceMember.objects.filter(user=actor, workspace=target_ws, role="admin").exists()
-                )
-            )
+            from user_permissions.access import has_perm
+
+            may_edit = bool(actor and target_ws and has_perm(actor, target_ws.pk, "team.edit"))
             unchanged = bool(self.instance) and attrs["group"] == self.instance.group
-            if not is_admin and not unchanged:
-                raise serializers.ValidationError({"group": "Only workspace admins can change a user's group."})
+            if not may_edit and not unchanged:
+                raise serializers.ValidationError({"group": "You don't have permission to change a user's group."})
 
         # If a manager is selected
         if manager:
@@ -93,11 +102,11 @@ class WorkspaceMemberSerializer(serializers.ModelSerializer):
                     {"manager": "Manager must belong to the same workspace."}
                 )
 
-            # Check role of manager
-            if membership.role not in ["manager", "admin"]:
-                raise serializers.ValidationError(
-                    {"manager": "Selected user is not a manager or admin."}
-                )
+            # Anyone in the workspace may be someone's approver (they can then review that person's time),
+            # just not the person themselves.
+            member_user = attrs.get("user") or (self.instance.user if self.instance else None)
+            if member_user is not None and member_user.pk == manager.pk:
+                raise serializers.ValidationError({"manager": "Someone can't be their own approver."})
 
         return attrs
 

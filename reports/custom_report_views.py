@@ -43,7 +43,7 @@ from clients.models import Client
 from projects.models import Project
 from tasks.models import Task
 from time_entries.models import TimeEntry
-from user_permissions.models import UserPermission
+from user_permissions.access import workspaces_with
 from users.models import User
 from workspaces.models import WorkspaceMember
 
@@ -96,19 +96,9 @@ def _names_summary(names, empty_text):
 
 
 def _allowed_workspace_ids(user):
-    """Workspaces where `user` may use Custom Reports: those where the user is
-    still a member and their "custom_report" permission is switched on (same
-    per-module flag model as the rest of the app; superusers bypass it)."""
-    member_ws = {
-        str(ws_id) for ws_id in WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
-    }
-    granted_ws = {
-        str(ws_id)
-        for ws_id in UserPermission.objects.filter(user=user, custom_report=True).values_list(
-            "workspace_id", flat=True
-        )
-    }
-    return granted_ws & member_ws
+    """Workspaces where `user` may use Custom Reports: those where they're an active member with the
+    "Custom report & report dashboard" permission (reports.custom; superusers are handled by the caller)."""
+    return {str(ws_id) for ws_id in (workspaces_with(user, "reports.custom") or set())}
 
 
 def _resolve_workspace_scope(request, requested):

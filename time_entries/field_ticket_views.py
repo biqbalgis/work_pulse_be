@@ -1,3 +1,5 @@
+from projects.models import Project
+from user_permissions.drf import require
 """
 Field Ticket Bulk Entry
 POST /api/time_entries/field-ticket-entry/
@@ -297,6 +299,12 @@ class FieldTicketBulkEntryView(APIView):
 
         for index, data in enumerate(serializer.validated_data):
             try:
+                # Entering crew time on a field ticket needs "Create field tickets" (or "Add time for others") in
+                # the project's workspace; your own time needs neither.
+                if str(data["user"]) != str(request.user.id):
+                    workspace_id = Project.objects.filter(id=data["project"]).values_list("workspace_id", flat=True).first()
+                    require(request.user, workspace_id, ("field_tickets.add", "timesheet.add_all"),
+                            "You don't have permission to enter time for other people.")
                 created = create_field_ticket_entry(request, data)
                 created_entries.append(str(created.id))
             except Exception as exc:
@@ -330,14 +338,10 @@ class FixMissingApprovalsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        # Restrict to superuser or workspace admin
-        from workspaces.models import WorkspaceMember
-        is_admin = (
-            request.user.is_superuser or
-            WorkspaceMember.objects.filter(user=request.user, role__in=["admin", "manager"]).exists()
-        )
-        if not is_admin:
-            return Response({"error": "Only admins can run this fix."}, status=403)
+        # People who approve time (approvals.approve) somewhere, or superusers.
+        from user_permissions.access import workspaces_with
+        if not (request.user.is_superuser or workspaces_with(request.user, "approvals.approve")):
+            return Response({"error": "Only people who approve time can run this fix."}, status=403)
 
         dry_run    = request.data.get("dry_run", False)
         user_id    = request.data.get("user_id")

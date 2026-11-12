@@ -1,3 +1,4 @@
+from user_permissions.drf import ActionPermissions, require
 from rest_framework.response import Response
 from rest_framework import viewsets, permissions, serializers, status, filters
 from rest_framework.decorators import action
@@ -47,8 +48,25 @@ class ProjectViewSet(viewsets.ModelViewSet):
         if self.request.query_params.get('pagination') == 'false':
             return None
         return super().paginate_queryset(queryset)
-    # permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdmin | IsSuperUser]
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceAdminOrSuperUser]
+    # Every member reads projects (the time and field ticket forms list them); changing them needs the permission
+    # in the project's workspace (user_permissions.catalog).
+    permission_classes = [permissions.IsAuthenticated, ActionPermissions]
+    action_permissions = {
+        "create": "projects.add",
+        "update": "projects.edit",
+        "partial_update": "projects.edit",
+        "destroy": "projects.delete",
+        "archive": "projects.archive",
+        "restore": "projects.archive",
+    }
+    action_permission_messages = {
+        "create": "You don't have permission to add projects.",
+        "update": "You don't have permission to edit projects.",
+        "partial_update": "You don't have permission to edit projects.",
+        "destroy": "You don't have permission to delete projects.",
+        "archive": "You don't have permission to archive projects.",
+        "restore": "You don't have permission to restore projects.",
+    }
 
     def get_queryset(self):
         user = self.request.user
@@ -136,10 +154,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
             except Workspace.DoesNotExist:
                 raise serializers.ValidationError({"workspace": "Workspace not found."})
         else:
-            member = WorkspaceMember.objects.filter(user=user).first()
+            member = WorkspaceMember.objects.filter(user=user, is_active=True).first()
             if not member:
                 raise serializers.ValidationError("User is not a member of any workspace.")
             workspace = member.workspace
+        require(user, workspace.id, "projects.add", "You don't have permission to add projects.")
 
         instance = serializer.save(workspace=workspace, created_by=user)
         log_activity(user, "CREATE", "Project", instance.id, request=self.request)

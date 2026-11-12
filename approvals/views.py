@@ -13,7 +13,9 @@ from workspaces.permissions import IsWorkspaceUser
 from .models import TimeEntryApproval, TimeEntryApprovalItem
 from .serializers import TimeEntryApprovalSerializer, TimeEntryApprovalItemSerializer
 from time_entries.models import TimeEntry
-from .utils import can_approve, calculate_rt_ot_and_cost
+from .utils import approval_decision, can_approve, calculate_rt_ot_and_cost
+from django.db.models import Q
+from user_permissions.access import workspaces_with
 from core.utils.pay_rules import day_context, split_entries
 from .review import APPROVED, REJECTED, decide_item, refresh_week_status, week_detail
 from notifications.notify import notify_entry_decision, notify_week_decision
@@ -46,8 +48,17 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         )
 
         if not user.is_superuser:
-            workspace_ids = WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
-            queryset = queryset.filter(workspace_id__in=workspace_ids)
+            # Their own weeks; everyone's in workspaces where they may view all approvals; and the weeks of the
+            # people they're the assigned approver of.
+            workspace_ids = WorkspaceMember.objects.filter(user=user, is_active=True).values_list("workspace_id", flat=True)
+            view_all = workspaces_with(user, "approvals.view_all") or set()
+            team = WorkspaceMember.objects.filter(manager=user, is_active=True).values_list("user_id", "workspace_id")
+            team_filter = Q()
+            for member_id, member_workspace in team:
+                team_filter |= Q(user_id=member_id, workspace_id=member_workspace)
+            queryset = queryset.filter(workspace_id__in=workspace_ids).filter(
+                Q(user=user) | Q(workspace_id__in=view_all) | team_filter
+            )
 
         workspace_id = self.request.query_params.get("workspace")
         if workspace_id:
@@ -83,9 +94,18 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         employee = context["employees"].get((approval.user_id, approval.workspace_id))
         if not approver or not employee:
             return False
-        if employee.manager_id:
-            return employee.manager_id == request_user.id or approver.role == "admin"
-        return approver.role == "admin"
+        return approval_decision(request_user, approval.workspace_id, employee.user_id, employee.manager_id, approver)
+
+    # Weeks are only ever submitted (POST submit/) and decided (the approve / reject actions); the plain
+    # create / edit / delete endpoints of a ModelViewSet are closed.
+    def create(self, request, *args, **kwargs):
+        return Response({"error": "Submit your week from the Timesheet."}, status=405)
+
+    def update(self, request, *args, **kwargs):
+        return Response({"error": "Approvals are changed by approving or rejecting them."}, status=405)
+
+    def destroy(self, request, *args, **kwargs):
+        return Response({"error": "Approvals can't be deleted."}, status=405)
 
     def _serialize_approval_summary(self, approval, request, context=None, splits=None, billed=None):
         if context is None:

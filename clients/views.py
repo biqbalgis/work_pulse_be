@@ -3,11 +3,28 @@ from .models import Client
 from .serializers import ClientSerializer
 from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
-from workspaces.permissions import IsWorkspaceManager, IsSuperUser
+from user_permissions.drf import ActionPermissions, require
 
 class ClientViewSet(viewsets.ModelViewSet):
     serializer_class = ClientSerializer
-    permission_classes = [permissions.IsAuthenticated, IsWorkspaceManager | IsSuperUser]
+    # Reading clients: the Clients page, or picking a client for a project. Changing them: the client permissions,
+    # in the client's workspace.
+    permission_classes = [permissions.IsAuthenticated, ActionPermissions]
+    action_permissions = {
+        "list": ("clients.view", "projects.view", "projects.add", "projects.edit"),
+        "retrieve": ("clients.view", "projects.view", "projects.add", "projects.edit"),
+        "create": "clients.add",
+        "update": "clients.edit",
+        "partial_update": "clients.edit",
+        "destroy": "clients.delete",
+    }
+    action_permission_messages = {
+        "list": "You don't have permission to view clients.",
+        "create": "You don't have permission to add clients.",
+        "update": "You don't have permission to edit clients.",
+        "partial_update": "You don't have permission to edit clients.",
+        "destroy": "You don't have permission to delete clients.",
+    }
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'workspace__name', 'contact_info']
     ordering_fields = ['name', 'workspace__name', 'contact_info', 'created_at']
@@ -39,9 +56,10 @@ class ClientViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        member = WorkspaceMember.objects.filter(user=user).first()
+        member = WorkspaceMember.objects.filter(user=user, is_active=True).first()
         if not member:
             raise serializers.ValidationError("User is not part of any workspace.")
+        require(user, member.workspace_id, "clients.add", "You don't have permission to add clients.")
         instance = serializer.save(workspace=member.workspace)
         log_activity(user, "CREATE", "Client", instance.id, request=self.request)
 

@@ -21,6 +21,9 @@ from workspaces.permissions import IsWorkspaceUser
 from .envision_timesheet_utils import generate_envision_timesheet_xlsx
 
 
+from user_permissions.access import workspaces_with
+
+
 class EnvisionTimesheetReportView(APIView):
     """
     Generate and download an Envision GEO Payroll Excel report.
@@ -66,11 +69,10 @@ class EnvisionTimesheetReportView(APIView):
         if user.is_superuser:
             workspace_ids = None  # superusers are not workspace-restricted
         else:
-            workspace_ids = list(
-                WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
-            )
+            # Only workspaces where they may export payroll (reports.payroll_export).
+            workspace_ids = list(workspaces_with(user, "reports.payroll_export") or [])
             if not workspace_ids:
-                return Response({"error": "You are not a member of any workspace."}, status=403)
+                return Response({"error": "You don't have permission to export payroll."}, status=403)
 
         # ── Fetch project (optional) ──────────────────────────────────────────
         project = None

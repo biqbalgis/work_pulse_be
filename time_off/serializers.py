@@ -13,3 +13,5 @@ class TimeOffRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = TimeOffRequest
         fields = '__all__'
+        # Who it's for, where, and the decision are set by the server (approve / reject actions), never sent.
+        read_only_fields = ['workspace', 'user', 'status', 'reviewed_by', 'reviewer_comment', 'created_by']

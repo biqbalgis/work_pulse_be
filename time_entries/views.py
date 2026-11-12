@@ -1,3 +1,6 @@
+from django.db.models import Q
+from user_permissions.access import workspaces_with
+from user_permissions.drf import require
 from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -46,8 +49,6 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
     # -----------------------------------------------------
     # ✔ FILTER BY WORKSPACE FOR SECURITY
     # -----------------------------------------------------
-    ELEVATED_ROLES = {"admin", "manager", "field_manager"}
-
     def get_queryset(self):
         user = self.request.user
         user_id_param = self.request.query_params.get("user")
@@ -55,25 +56,16 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         if user.is_superuser:
             queryset = TimeEntry.objects.filter(is_deleted=False)
         else:
-            memberships = WorkspaceMember.objects.filter(user=user)
-            workspace_ids = memberships.values_list("workspace_id", flat=True)
-            has_workspace_wide_access = memberships.filter(
-                role__in=self.ELEVATED_ROLES
-            ).exists()
-
-            queryset = TimeEntry.objects.filter(
-                workspace_id__in=workspace_ids,
-                is_deleted=False,
+            # Everyone sees their own time; other people's only in workspaces where they may view everyone's time
+            # (timesheet.view_all).
+            workspace_ids = WorkspaceMember.objects.filter(user=user, is_active=True).values_list("workspace_id", flat=True)
+            view_all = workspaces_with(user, "timesheet.view_all") or set()
+            queryset = TimeEntry.objects.filter(workspace_id__in=workspace_ids, is_deleted=False).filter(
+                Q(user=user) | Q(workspace_id__in=view_all)
             )
-
-            if not has_workspace_wide_access:
-                # Regular users may only ever see their own entries — a
-                # ?user=<uuid> for someone else is not silently swapped in.
-                if user_id_param and str(user_id_param) != str(user.id):
-                    raise PermissionDenied(
-                        "You are not authorized to view another user's time entries."
-                    )
-                queryset = queryset.filter(user=user)
+            if not view_all and user_id_param and str(user_id_param) != str(user.id):
+                # A ?user=<uuid> for someone else is refused, not silently swapped in.
+                raise PermissionDenied("You don't have permission to view other people's time.")
 
         if user_id_param:
             queryset = queryset.filter(user_id=user_id_param)
@@ -220,6 +212,9 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         entry = self.get_object()
+        if entry.user_id != self.request.user.id:
+            require(self.request.user, entry.workspace_id, "timesheet.edit_all",
+                    "You don't have permission to edit other people's time.")
         old_start_time = entry.start_time
 
         reason = entry.timesheet_lock_reason()
@@ -410,6 +405,9 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         return False
 
     def perform_destroy(self, instance):
+        if instance.user_id != self.request.user.id:
+            require(self.request.user, instance.workspace_id, "timesheet.delete_all",
+                    "You don't have permission to delete other people's time.")
         reason = instance.timesheet_lock_reason()
         if reason:
             raise ValidationError(reason)
@@ -474,9 +472,13 @@ class BulkTimeEntryViewSet(viewsets.ViewSet):
                     raise ValidationError(f"User {target_user} is not a member of any workspace.")
                 workspace = wm.workspace
 
-                # 3. Project check — anyone in the project's workspace may log time on it
+                # 3. Project check — anyone in the project's workspace may log time on it; logging it for someone
+                # else needs "Add time for others" there.
                 project_id = data['project']
                 workspace = resolve_project_workspace(target_user, project_id)
+                if target_user.pk != request.user.pk:
+                    require(request.user, workspace.pk, "timesheet.add_all",
+                            "You don't have permission to add time for other people.")
                 job_title_id, hourly_rate = resolve_entry_role(
                     target_user, project_id, workspace, data.get('job_title')
                 )
@@ -589,24 +591,14 @@ class BulkTimeEntryEditViewSet(viewsets.ViewSet):
         if user.is_superuser:
             return TimeEntry.objects.select_related("user").filter(is_deleted=False)
 
-        memberships = WorkspaceMember.objects.filter(
-            user=user,
-            is_active=True,
-            is_deleted=False,
-        )
-        workspace_ids = memberships.values_list("workspace_id", flat=True)
-        elevated_roles = {"admin", "manager", "field_manager"}
-        has_workspace_wide_access = memberships.filter(role__in=elevated_roles).exists()
-
-        queryset = TimeEntry.objects.select_related("user").filter(
-            workspace_id__in=workspace_ids,
-            is_deleted=False,
-        )
-
-        if has_workspace_wide_access:
-            return queryset
-
-        return queryset.filter(user=user)
+        workspace_ids = WorkspaceMember.objects.filter(
+            user=user, is_active=True, is_deleted=False,
+        ).values_list("workspace_id", flat=True)
+        # Their own time, plus everyone's in workspaces where they may edit other people's time.
+        edit_all = workspaces_with(user, "timesheet.edit_all") or set()
+        return TimeEntry.objects.select_related("user").filter(
+            workspace_id__in=workspace_ids, is_deleted=False,
+        ).filter(Q(user=user) | Q(workspace_id__in=edit_all))
 
     def _filter_queryset(self, queryset, params):
         def _get(key):
@@ -852,7 +844,9 @@ class WeeklyHoursSummaryView(APIView):
             cursor += timedelta(days=1)
 
         # Base queryset — the authenticated user's, or the employee an admin is viewing
-        target_user, _workspace = resolve_target_user(request.user, data.get("user_id"))
+        target_user, _workspace = resolve_target_user(
+            request.user, data.get("user_id"), "timesheet.view_all", "You don't have permission to view other people's time.",
+        )
         qs = TimeEntry.objects.filter(user=target_user, is_deleted=False).select_related("project")
         if tz is not None:
             # Whole local days: [start of start_date, start of the day after end_date) in the viewer's zone
