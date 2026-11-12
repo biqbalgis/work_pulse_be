@@ -697,18 +697,20 @@ class EnvisionFieldTicketListView(APIView):
 
     @staticmethod
     def _count_documents(lems):
-        """{lem id: {"verification": n, "invoice": n}} for this page, in two queries."""
-        counts = {lem.id: {"verification": 0, "invoice": 0} for lem in lems}
-        rows = (LEMDocument.objects.filter(lem__in=lems, kind=LEMDocument.VERIFICATION)
-                .values("lem_id").annotate(n=Count("id")))
+        """{lem id: {document type: n}} of the files people attached, for this page in two queries: uploads on the
+        ticket by their type, plus the files on its invoice (counted as invoices)."""
+        empty = {value: 0 for value, _label in LEMDocument.DOCUMENT_TYPE_CHOICES}
+        counts = {lem.id: dict(empty) for lem in lems}
+        rows = (LEMDocument.objects.filter(lem__in=lems, kind__in=LEMDocument.UPLOADED_KINDS)
+                .values("lem_id", "document_type").annotate(n=Count("id")))
         for row in rows:
-            counts[row["lem_id"]]["verification"] = row["n"]
+            counts[row["lem_id"]][row["document_type"]] += row["n"]
         by_invoice = dict(LEMDocument.objects.filter(invoice_id__in={lem.invoice_id for lem in lems if lem.invoice_id},
-                                                     kind=LEMDocument.INVOICE)
+                                                     lem__isnull=True)
                           .values_list("invoice_id").annotate(n=Count("id")))
         for lem in lems:
             if lem.invoice_id:
-                counts[lem.id]["invoice"] = by_invoice.get(lem.invoice_id, 0)
+                counts[lem.id][LEMDocument.TYPE_INVOICE] += by_invoice.get(lem.invoice_id, 0)
         return counts
 
     def _base_fields(self, lem):
@@ -727,7 +729,7 @@ class EnvisionFieldTicketListView(APIView):
             "invoiced_on": lem.invoiced_on,
             "invoice_number": lem.invoice_number,
             # Documents kept with it (S3): verification documents on the ticket, files on its invoice.
-            "document_counts": getattr(self, "_document_counts", {}).get(lem.id, {"verification": 0, "invoice": 0}),
+            "document_counts": getattr(self, "_document_counts", {}).get(lem.id, {}),
             "can_upload_verification": lem.status in (LEMReport.STATUS_APPROVED, LEMReport.STATUS_INVOICED) and bool(lem.project_id) and (
                 self._status_workspace_ids is None or lem.project.workspace_id in self._status_workspace_ids
             ),

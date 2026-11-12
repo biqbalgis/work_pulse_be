@@ -223,11 +223,16 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
 AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
 AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')
-AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='ca-central-1')
-# Only for S3-compatible services (MinIO, DigitalOcean Spaces...); leave empty for AWS.
+# Only for S3-compatible services (MinIO, DigitalOcean Spaces...); leave empty for AWS. For Spaces it's the region's
+# endpoint, e.g. https://tor1.digitaloceanspaces.com, with AWS_S3_REGION_NAME=tor1.
 AWS_S3_ENDPOINT_URL = config('AWS_S3_ENDPOINT_URL', default='') or None
+if AWS_S3_ENDPOINT_URL and AWS_STORAGE_BUCKET_NAME:
+    # The Spaces dashboard shows the bucket's own address (https://<bucket>.tor1.digitaloceanspaces.com); used as the
+    # endpoint it puts every file under an extra <bucket>/ folder, so take the bucket name off the front.
+    AWS_S3_ENDPOINT_URL = AWS_S3_ENDPOINT_URL.replace(f'://{AWS_STORAGE_BUCKET_NAME}.', '://', 1).rstrip('/')
+AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='') or None
 # Folder inside the bucket every document goes under.
-AWS_DOCUMENTS_PREFIX = config('AWS_DOCUMENTS_PREFIX', default='workpulse')
+AWS_DOCUMENTS_PREFIX = config('AWS_DOCUMENTS_PREFIX', default='boss_workpulse')
 # Largest verification / invoice file people can upload, in MB.
 DOCUMENT_MAX_UPLOAD_MB = config('DOCUMENT_MAX_UPLOAD_MB', default=20, cast=int)
 DATA_UPLOAD_MAX_MEMORY_SIZE = (DOCUMENT_MAX_UPLOAD_MB + 1) * 1024 * 1024

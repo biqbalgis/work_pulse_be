@@ -2,8 +2,9 @@
 Documents kept with field tickets and invoices (stored in S3, see reports.storage / reports.document_models).
 
     GET    /api/reports/envision/lem/documents/?lem_number=FTF-000012   a ticket's documents (and its invoice's)
-    POST   /api/reports/envision/lem/documents/                         upload a verification document
-           multipart: lem_number, file (PDF or image), kind=verification
+    POST   /api/reports/envision/lem/documents/                         upload a document to a ticket
+           multipart: lem_number, file (PDF or image), document_type = lem | approved_lem | invoice | other
+           (default approved_lem: what the "just approved" prompt sends)
     GET    /api/reports/envision/documents/<id>/download/               the file itself
     DELETE /api/reports/envision/documents/<id>/                        remove an uploaded document (admins)
 """
@@ -64,6 +65,13 @@ class LEMDocumentsView(APIView):
             "ticket_number": lem.ticket_number,
             "status": lem.status,
             "can_upload_verification": lem.status in VERIFIABLE_STATUSES and _can_change_lem_status(request.user, lem),
+            # From the Documents dialog approvers may add any type; Approved LEM only once the ticket is approved.
+            "can_upload": _can_change_lem_status(request.user, lem),
+            "document_types": [
+                {"value": value, "label": label,
+                 "allowed": value != LEMDocument.TYPE_APPROVED_LEM or lem.status in VERIFIABLE_STATUSES}
+                for value, label in LEMDocument.DOCUMENT_TYPE_CHOICES
+            ],
             "documents": [document_json(d) for d in _documents_of(lem)],
         })
 
@@ -71,14 +79,15 @@ class LEMDocumentsView(APIView):
         lem = _find_field_ticket_lem(str(request.data.get("lem_number", "")), request.user)
         if not lem or not _can_view_lem(request.user, lem):
             return Response({"error": "Field ticket not found."}, status=404)
-        kind = request.data.get("kind") or LEMDocument.VERIFICATION
-        if kind != LEMDocument.VERIFICATION:
-            raise ValidationError("Only verification documents can be uploaded to a field ticket.")
+        document_type = request.data.get("document_type") or LEMDocument.TYPE_APPROVED_LEM
+        if document_type not in dict(LEMDocument.DOCUMENT_TYPE_CHOICES):
+            raise ValidationError("Choose the document type: LEM, Approved LEM, Invoice or Others.")
         if not _can_change_lem_status(request.user, lem):
-            return Response({"error": "Only people who approve field tickets can add verification documents."}, status=403)
-        if lem.status not in VERIFIABLE_STATUSES:
-            raise ValidationError(f"{lem.ticket_number} isn't approved yet. Add the verification document once it's approved.")
-        document = save_upload(request.FILES.get("file"), LEMDocument.VERIFICATION, request.user, lem=lem)
+            return Response({"error": "Only people who approve field tickets can add documents to them."}, status=403)
+        if document_type == LEMDocument.TYPE_APPROVED_LEM and lem.status not in VERIFIABLE_STATUSES:
+            raise ValidationError(f"{lem.ticket_number} isn't approved yet. Add the Approved LEM once it's approved.")
+        document = save_upload(request.FILES.get("file"), LEMDocument.VERIFICATION, request.user, lem=lem,
+                               document_type=document_type)
         return Response(document_json(document), status=201)
 
 

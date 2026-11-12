@@ -9,6 +9,10 @@ Invoices and the documents kept with field tickets (stored in S3, see reports.st
       verification       a PDF / photo proving the ticket was accepted (e.g. the client's signed copy)
       invoice            the invoice document, attached to an Invoice
       signed_ticket_pdf  a ticket PDF signed inside the app (reserved for the coming digital signatures)
+    `kind` is where it came from; `document_type` is what the document is (LEM, Approved LEM, Invoice, Others),
+    shown with it and used as its folder in storage. The type is set automatically from where it was uploaded
+    (approving a ticket -> Approved LEM, marking it invoiced -> Invoice, the issued PDF -> LEM) and chosen by the
+    person uploading from a ticket's Documents dialog.
 """
 
 import os
@@ -50,15 +54,21 @@ def _safe(name):
 
 
 def document_path(instance, filename):
-    """<workspace>/field-tickets/<ticket number>/<kind>/<time>-<file>, or <workspace>/invoices/<number>/... ."""
+    """<field ticket UUID>/<document type>_<time>_<file>, inside the bucket's folder (AWS_DOCUMENTS_PREFIX, e.g.
+    boss_workpulse/): every file of a ticket sits in that ticket's own folder. An invoice file is kept once, in the
+    folder of the first ticket on the invoice (lowest ticket number)."""
     stamp = timezone.now().strftime("%Y%m%d-%H%M%S")
-    name = f"{stamp}-{_safe(os.path.basename(filename))}"
-    if instance.invoice_id and not instance.lem_id:
-        invoice = instance.invoice
-        return f"{invoice.workspace_id}/invoices/{_safe(invoice.number)}/{name}"
-    lem = instance.lem
-    workspace_id = lem.project.workspace_id if lem.project_id else "no-workspace"
-    return f"{workspace_id}/field-tickets/{_safe(lem.ticket_number_for(0))}/{instance.kind}/{name}"
+    document_type = (instance.document_type or LEMDocument.DEFAULT_TYPE[instance.kind]).replace("_", "-")
+    name = f"{document_type}_{stamp}_{_safe(os.path.basename(filename))}"
+    lem_id = instance.lem_id
+    if not lem_id and instance.invoice_id:
+        from .models import LEMReport
+
+        lem_id = (LEMReport.all_objects.filter(invoice_id=instance.invoice_id).order_by("lem_number")
+                  .values_list("id", flat=True).first())
+        if not lem_id:  # an invoice with no tickets (not something the app makes): its own folder
+            return f"invoices/{instance.invoice_id}/{name}"
+    return f"{lem_id}/{name}"
 
 
 class LEMDocument(SoftDeleteModel):
@@ -75,10 +85,30 @@ class LEMDocument(SoftDeleteModel):
     # Kinds people upload (the others the app makes itself).
     UPLOADED_KINDS = (VERIFICATION, INVOICE)
 
+    # What the document is.
+    TYPE_LEM = "lem"
+    TYPE_APPROVED_LEM = "approved_lem"
+    TYPE_INVOICE = "invoice"
+    TYPE_OTHER = "other"
+    DOCUMENT_TYPE_CHOICES = (
+        (TYPE_LEM, "LEM"),
+        (TYPE_APPROVED_LEM, "Approved LEM"),
+        (TYPE_INVOICE, "Invoice"),
+        (TYPE_OTHER, "Others"),
+    )
+    # The type a document gets from where it came from, when nobody chose one.
+    DEFAULT_TYPE = {
+        TICKET_PDF: TYPE_LEM,
+        VERIFICATION: TYPE_APPROVED_LEM,
+        INVOICE: TYPE_INVOICE,
+        SIGNED_TICKET_PDF: TYPE_LEM,
+    }
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     lem = models.ForeignKey("reports.LEMReport", on_delete=models.CASCADE, null=True, blank=True, related_name="documents")
     invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, null=True, blank=True, related_name="documents")
     kind = models.CharField(max_length=30, choices=KIND_CHOICES)
+    document_type = models.CharField(max_length=30, choices=DOCUMENT_TYPE_CHOICES, default=TYPE_OTHER)
     # Which version of the ticket a generated / signed PDF is (0 = as first issued, 1 = R01 ...).
     revision = models.PositiveIntegerField(null=True, blank=True)
     file = models.FileField(storage=document_storage, upload_to=document_path, max_length=500)
@@ -93,5 +123,11 @@ class LEMDocument(SoftDeleteModel):
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["lem", "kind"], name="lemdocument_lem_kind_idx")]
 
+    def __init__(self, *args, **kwargs):
+        # No type given: the one its kind implies (an issued PDF is a LEM, an invoice upload an Invoice, ...).
+        if "document_type" not in kwargs and kwargs.get("kind") in self.DEFAULT_TYPE:
+            kwargs["document_type"] = self.DEFAULT_TYPE[kwargs["kind"]]
+        super().__init__(*args, **kwargs)
+
     def __str__(self):
-        return f"{self.get_kind_display()}: {self.original_name}"
+        return f"{self.get_document_type_display()}: {self.original_name}"

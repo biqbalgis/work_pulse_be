@@ -39,10 +39,12 @@ def validate_upload(upload):
     return ALLOWED_TYPES[extension]
 
 
-def save_upload(upload, kind, user, lem=None, invoice=None):
-    """Store an uploaded verification document / invoice file and record it."""
+def save_upload(upload, kind, user, lem=None, invoice=None, document_type=None):
+    """Store an uploaded document and record it. `document_type` defaults to the one `kind` implies
+    (a ticket upload on approval -> Approved LEM, an invoice upload -> Invoice)."""
     content_type = validate_upload(upload)
     document = LEMDocument(lem=lem, invoice=invoice, kind=kind, original_name=os.path.basename(upload.name)[:255],
+                           document_type=document_type or LEMDocument.DEFAULT_TYPE[kind],
                            content_type=content_type, size=upload.size, uploaded_by=user)
     document.file.save(upload.name, upload, save=False)
     document.save()
@@ -69,6 +71,8 @@ def document_json(document):
         "id": str(document.id),
         "kind": document.kind,
         "kind_label": document.get_kind_display(),
+        "document_type": document.document_type,
+        "document_type_label": document.get_document_type_display(),
         "name": document.original_name,
         "content_type": document.content_type,
         "size": document.size,

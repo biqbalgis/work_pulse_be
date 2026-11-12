@@ -19,7 +19,7 @@ _backends = {}
 def _backend():
     bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "")
     if bucket:
-        key = ("s3", bucket, settings.AWS_S3_REGION_NAME, settings.AWS_S3_ENDPOINT_URL, settings.AWS_DOCUMENTS_PREFIX,
+        key = ("s3", bucket, settings.AWS_S3_ENDPOINT_URL, settings.AWS_DOCUMENTS_PREFIX,
                settings.AWS_ACCESS_KEY_ID)
         if key not in _backends:
             from storages.backends.s3 import S3Storage
@@ -28,8 +28,8 @@ def _backend():
                 bucket_name=bucket,
                 access_key=settings.AWS_ACCESS_KEY_ID or None,
                 secret_key=settings.AWS_SECRET_ACCESS_KEY or None,
-                region_name=settings.AWS_S3_REGION_NAME or None,
                 endpoint_url=settings.AWS_S3_ENDPOINT_URL,
+                region_name=getattr(settings, "AWS_S3_REGION_NAME", None),
                 location=settings.AWS_DOCUMENTS_PREFIX,
                 default_acl="private",
                 file_overwrite=False,
