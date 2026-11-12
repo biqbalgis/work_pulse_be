@@ -190,13 +190,13 @@ class JobTitleViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.is_superuser:
             workspace_id = self.request.query_params.get('workspace')
-            queryset = JobTitle.objects.filter(is_deleted=False)
+            queryset = JobTitle.objects.filter(is_deleted=False).select_related("workspace")
             if workspace_id:
                 queryset = queryset.filter(workspace_id=workspace_id)
             return queryset
 
         workspace = get_user_workspace(self.request)
-        return JobTitle.objects.filter(workspace=workspace, is_deleted=False)
+        return JobTitle.objects.filter(workspace=workspace, is_deleted=False).select_related("workspace")
 
     def _resolve_workspace(self, request, instance=None):
         from workspaces.models import Workspace
@@ -257,6 +257,8 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         else:
             workspace = get_user_workspace(self.request)
             queryset = ProjectRole.objects.filter(workspace=workspace, is_deleted=False)
+        # Each row prints its job title, project and workspace names: load them in the same query.
+        queryset = queryset.select_related("job_title", "project", "workspace")
 
         project_id = self.request.query_params.get('project')
         if project_id:

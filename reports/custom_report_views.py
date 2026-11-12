@@ -329,10 +329,10 @@ class CustomReportOptionsView(APIView):
             if uid in listed_ids:
                 group_counts[grp] = group_counts.get(grp, 0) + 1
 
-        project_info = {
-            p.id: p
-            for p in all_projects.select_related("client")
-        }
+        # Each list is read once: the picker's projects, and (only when that leaves some out) every project
+        # in scope for the task rows.
+        project_list = list(projects.order_by("name"))
+        project_info = {p.id: p for p in (all_projects if active_only else project_list)}
         tasks = Task.objects.filter(project__in=all_projects).order_by("name")
 
         return Response({
@@ -343,7 +343,7 @@ class CustomReportOptionsView(APIView):
             "projects": [
                 {"id": str(p.id), "name": p.name, "job_code": p.job_code or "",
                  "archived_on": timezone.localtime(p.archived_at).date().isoformat() if p.archived_at else None}
-                for p in projects.order_by("name")
+                for p in project_list
             ],
             "clients": [
                 {"id": str(c.id), "name": c.name}
@@ -363,7 +363,7 @@ class CustomReportOptionsView(APIView):
                 }
                 for t in tasks
             ],
-            "project_clients": {str(p.id): str(p.client_id) for p in projects if p.client_id},
+            "project_clients": {str(p.id): str(p.client_id) for p in project_list if p.client_id},
             "employees": [
                 {"id": str(u.id), "label": u.get_full_name() or u.email, "group": group_of.get(u.id)}
                 for u in users

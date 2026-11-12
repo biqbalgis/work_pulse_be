@@ -5,8 +5,10 @@ entry moved away from is repriced too."""
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
+from core.utils import request_cache
 from core.utils.pay_rules import entry_day, reprice_days
 from organization_asset.models import AssetUsage
+from workspaces.models import Holiday
 from .models import TimeEntry
 
 
@@ -37,3 +39,10 @@ def reprice_usage_day(sender, instance, raw=False, **kwargs):
     entry = TimeEntry.all_objects.filter(pk=instance.time_entry_id).only("user_id", "start_time").first()
     if entry and entry.start_time:
         reprice_days({(entry.user_id, entry_day(entry))})
+
+
+@receiver(post_save, sender=Holiday)
+@receiver(post_delete, sender=Holiday)
+def forget_cached_holidays(sender, **kwargs):
+    """A holiday added, changed or removed mid-request: re-read them for the rest of the request."""
+    request_cache.clear()

@@ -14,6 +14,7 @@ from .models import TimeEntryApproval, TimeEntryApprovalItem
 from .serializers import TimeEntryApprovalSerializer, TimeEntryApprovalItemSerializer
 from time_entries.models import TimeEntry
 from .utils import can_approve, calculate_rt_ot_and_cost
+from core.utils.pay_rules import day_context, split_entries
 from .review import APPROVED, REJECTED, decide_item, refresh_week_status, week_detail
 from notifications.notify import notify_entry_decision, notify_week_decision
 
@@ -86,14 +87,14 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
             return employee.manager_id == request_user.id or approver.role == "admin"
         return approver.role == "admin"
 
-    def _serialize_approval_summary(self, approval, request, context=None):
+    def _serialize_approval_summary(self, approval, request, context=None, splits=None, billed=None):
         if context is None:
             items = approval.items.select_related("time_entry__project")
             entries_count = items.count()
         else:
             items = list(approval.items.all())  # prefetched by list()
             entries_count = len(items)
-        metrics = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
+        metrics = calculate_rt_ot_and_cost(items, workspace=approval.workspace, splits=splits, billed=billed)
         # Equipment and rate charges on the week's billable entries.
         lines_total = round(float(sum(
             usage.cost or 0
@@ -155,7 +156,16 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
             ),
         )
         context = self._approver_context(request.user, approvals)
-        data = [self._serialize_approval_summary(approval, request, context) for approval in approvals]
+        # Regular / overtime split for every entry on the page at once (a few queries in all, not several per
+        # approval): each person's whole days, their field tickets and the stat holidays are loaded one time.
+        entries = [item.time_entry for approval in approvals for item in approval.items.all()]
+        days = day_context(entries)
+        splits = split_entries(entries, context=days)
+        billed = split_entries(entries, context=days, per_ticket=True)
+        data = [
+            self._serialize_approval_summary(approval, request, context, splits=splits, billed=billed)
+            for approval in approvals
+        ]
 
         if page is not None:
             return self.get_paginated_response(data)
@@ -322,13 +332,19 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
     # ========== DETAIL VIEW WITH DAILY BREAKDOWN ==========
     def retrieve(self, request, pk=None):
         approval = self.get_object()
-        items = approval.items.select_related("time_entry__project")
+        items = list(approval.items.select_related("time_entry__project"))
 
         from collections import defaultdict
 
         # 🌐 Overall summary + per-(date, project) breakdown.
-        # Regular / overtime / double time by the pay rules (core.utils.pay_rules).
-        summary = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
+        # Regular / overtime / double time by the pay rules (core.utils.pay_rules), worked out once here.
+        entries = [item.time_entry for item in items]
+        days = day_context(entries)
+        splits = split_entries(entries, context=days)
+        billed = split_entries(entries, context=days, per_ticket=True)
+        summary = calculate_rt_ot_and_cost(items, workspace=approval.workspace, splits=splits, billed=billed)
+        # The week rows leave out deleted entries; when there are none, they reuse the same split.
+        shared = {} if any(entry.is_deleted for entry in entries) else {"splits": splits, "billed": billed}
 
         # 📆 Regroup breakdown by date for the response
         days = defaultdict(list)
@@ -367,7 +383,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
                 "total_cost": summary["total_cost"]
             },
             "daily_breakdown": formatted_days,
-            **week_detail(approval),
+            **week_detail(approval, **shared),
             "notes": approval.notes,
             "reviewed_by": approval.reviewed_by.get_full_name() if approval.reviewed_by else "",
             "status": approval.status,

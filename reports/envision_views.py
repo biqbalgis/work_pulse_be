@@ -29,6 +29,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
 from approvals.models import TimeEntryApproval, TimeEntryApprovalItem
+from core.utils import request_cache
 from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
 from projects.models import Project
 from tasks.models import Task
@@ -621,14 +622,13 @@ class EnvisionFieldTicketListView(APIView):
         qs = (
             LEMReport.objects
             .filter(lem_number__startswith=prefix, project__isnull=False)
-            .select_related("project", "project__workspace", "project__client", "requester")
+            # Everything a row prints in one query: the status line names who approved / rejected it.
+            .select_related("project", "project__workspace", "project__client", "requester", "status_changed_by")
             .annotate(effective_date=Coalesce("lem_date", TruncDate("created_at")))
         )
 
         # Workspaces where this user may revise and delete tickets: the ones they admin (None = all, for superusers).
-        self._revise_workspace_ids = None if user.is_superuser else set(
-            WorkspaceMember.objects.filter(user=user, role="admin", is_active=True).values_list("workspace_id", flat=True)
-        )
+        self._revise_workspace_ids = None if user.is_superuser else _lem_admin_workspace_ids(user)
         # ... and where they may mark tickets approved / rejected.
         self._status_workspace_ids = _lem_status_workspace_ids(user)
 
@@ -1094,14 +1094,27 @@ def _find_field_ticket_lem(raw, user):
     return lems.filter(lem_number=f"FTF-{raw}").first()
 
 
+def _ticket_access(user):
+    """(memberships as (workspace_id, role, is_active), workspaces with the "Approve / reject field tickets"
+    permission) for `user`: read once per request, since one request asks several of the questions below."""
+    def load():
+        members = list(WorkspaceMember.objects.filter(user=user).values_list("workspace_id", "role", "is_active"))
+        granted = set(UserPermission.objects.filter(user=user, lem_approval=True).values_list("workspace_id", flat=True))
+        return members, granted
+    return request_cache.remember(("ticket_access", user.pk), load)
+
+
+def _lem_admin_workspace_ids(user):
+    """Workspaces `user` actively admins: where they may revise and delete field tickets."""
+    members, _granted = _ticket_access(user)
+    return {workspace_id for workspace_id, role, active in members if role == "admin" and active}
+
+
 def _lem_viewer_workspace_ids(user):
     """Workspaces where `user` sees every field ticket, not just their own: those they admin, and those where
     they have the "Approve / reject field tickets" permission (they need the tickets to decide on them)."""
-    admin_ids = WorkspaceMember.objects.filter(
-        user=user, role__in=FIELD_TICKET_ADMIN_ROLES,
-    ).values_list("workspace_id", flat=True)
-    granted_ids = UserPermission.objects.filter(user=user, lem_approval=True).values_list("workspace_id", flat=True)
-    return set(admin_ids) | set(granted_ids)
+    members, granted = _ticket_access(user)
+    return {workspace_id for workspace_id, role, _active in members if role in FIELD_TICKET_ADMIN_ROLES} | granted
 
 
 def _can_view_lem(user, lem):
@@ -1115,9 +1128,7 @@ def _lem_status_workspace_ids(user):
     workspace admins, and anyone given the "Approve / reject field tickets" permission there."""
     if user.is_superuser:
         return None
-    admin_ids = WorkspaceMember.objects.filter(user=user, role="admin", is_active=True).values_list("workspace_id", flat=True)
-    granted_ids = UserPermission.objects.filter(user=user, lem_approval=True).values_list("workspace_id", flat=True)
-    return set(admin_ids) | set(granted_ids)
+    return _lem_admin_workspace_ids(user) | _ticket_access(user)[1]
 
 
 def _can_change_lem_status(user, lem):

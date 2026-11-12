@@ -27,6 +27,7 @@ from functools import lru_cache
 import holidays as holidays_lib
 from django.utils.dateparse import parse_datetime
 
+from core.utils import request_cache
 from core.utils.envision_time import utc_to_envision_local
 
 DAILY_RT_HOURS = Decimal("8")
@@ -75,7 +76,12 @@ def stat_holidays(years, workspace_id=None):
     for year in years:
         found.update(_alberta(year))
     if workspace_id and years:
-        for day, name in Holiday.objects.filter(workspace_id=workspace_id, date__year__in=years).values_list("date", "name"):
+        # Read once per request (see core.utils.request_cache): one API can need them for many people and days.
+        own = request_cache.remember(
+            ("stat_holidays", str(workspace_id), tuple(years)),
+            lambda: list(Holiday.objects.filter(workspace_id=workspace_id, date__year__in=years).values_list("date", "name")),
+        )
+        for day, name in own:
             found.setdefault(day, name)
     return found
 
@@ -125,6 +131,23 @@ def ticket_of(entry_ids):
     return dict(links)
 
 
+def day_context(entries):
+    """Every live entry on the same people's days as `entries` (a day either side covers the timezone shift), in
+    one query: pass it as split_entries(..., context=...) to share it between several splits of these entries."""
+    from datetime import timedelta
+    from time_entries.models import TimeEntry
+
+    entries = list(entries)
+    if not entries:
+        return []
+    days = {(e.user_id, entry_day(e)) for e in entries}
+    dates = [day for _, day in days]
+    return list(TimeEntry.objects.filter(
+        user_id__in={user for user, _ in days}, is_deleted=False,
+        start_time__date__gte=min(dates) - timedelta(days=1), start_time__date__lte=max(dates) + timedelta(days=1),
+    ).only("id", "user_id", "workspace_id", "start_time", "duration"))
+
+
 def split_entries(entries, context=None, per_ticket=False):
     """{entry id: Split} for `entries`. Each person's day is worked out from all their (live) entries that day,
     so an entry on another job earlier in the day moves where overtime starts. Pass `context` (entries already
@@ -152,11 +175,13 @@ def split_entries(entries, context=None, per_ticket=False):
     for entry in pool.values():
         grouped[(entry.user_id, entry_day(entry), tickets.get(entry.id))].append(entry)
 
+    # Stat holidays: one lookup per workspace (not per person) covering every year involved.
     workspace_by_user = {e.user_id: e.workspace_id for e in entries}
-    holidays = {}
-    for user_id in {u for u, _ in days}:
-        years = {d.year for u, d in days if u == user_id}
-        holidays[user_id] = stat_holidays(years, workspace_by_user.get(user_id))
+    years_by_workspace = defaultdict(set)
+    for user_id, day in days:
+        years_by_workspace[workspace_by_user.get(user_id)].add(day.year)
+    by_workspace = {ws: stat_holidays(years, ws) for ws, years in years_by_workspace.items()}
+    holidays = {user_id: by_workspace[workspace_by_user.get(user_id)] for user_id in {u for u, _ in days}}
 
     result = {}
     for (user_id, day, _ticket), day_entries in grouped.items():

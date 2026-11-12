@@ -45,6 +45,8 @@ MIDDLEWARE = [
     # so compression is applied last (Django's own recommended placement) —
     # otherwise every dashboard/report JSON response ships uncompressed.
     'django.middleware.gzip.GZipMiddleware',
+    # A per-request memo for data one request reads many times (stat holidays); see core.utils.request_cache.
+    'core.middleware.request_cache_middleware.RequestCacheMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'core.middleware.activity_middleware.ActivityLoggingMiddleware',
     'core.middleware.error_logging_middleware.ErrorLoggingMiddleware',

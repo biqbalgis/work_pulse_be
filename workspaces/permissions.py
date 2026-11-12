@@ -19,6 +19,20 @@ def get_user_role_in_workspace(user, workspace=None):
     return member.role if member else None
 
 
+def _member_of_workspace_with_role(user, view, roles):
+    """True if `user` has one of `roles` in the view's workspace, or (no workspace on the view) in the workspace
+    of their first membership. One query in the usual case instead of three: the first membership already says
+    which workspace it is and the role held there."""
+    membership = WorkspaceMember.objects.filter(user=user).first()
+    view_workspace = getattr(view, "workspace", None)
+    workspace_id = view_workspace.pk if view_workspace is not None else (membership.workspace_id if membership else None)
+    if not workspace_id:
+        return False
+    if membership and membership.workspace_id == workspace_id and membership.role in roles:
+        return True
+    return WorkspaceMember.objects.filter(user=user, workspace_id=workspace_id, role__in=roles).exists()
+
+
 class IsSuperUser(permissions.BasePermission):
     """Full access for Django superusers."""
     def has_permission(self, request, view):
@@ -31,16 +45,7 @@ class IsWorkspaceAdmin(permissions.BasePermission):
         user = request.user
         if user.is_superuser:
             return True
-
-        membership = WorkspaceMember.objects.filter(user=user).first()
-
-        workspace = (
-                getattr(view, "workspace", None)
-                or (membership.workspace if membership else None))
-        if not workspace:
-            return False
-
-        return WorkspaceMember.objects.filter(user=user, workspace=workspace, role='admin').exists()
+        return _member_of_workspace_with_role(user, view, ['admin'])
 
 
 class IsWorkspaceManager(permissions.BasePermission):
@@ -49,19 +54,7 @@ class IsWorkspaceManager(permissions.BasePermission):
         user = request.user
         if user.is_superuser:
             return True
-
-        membership = WorkspaceMember.objects.filter(user=user).first()
-
-        workspace = (
-                getattr(view, "workspace", None)
-                or (membership.workspace if membership else None))
-
-        if not workspace:
-            return False
-
-        return WorkspaceMember.objects.filter(
-            user=user, workspace=workspace, role__in=['manager', 'admin']
-        ).exists()
+        return _member_of_workspace_with_role(user, view, ['manager', 'admin'])
 
 
 class IsWorkspaceUser(permissions.BasePermission):
@@ -70,18 +63,7 @@ class IsWorkspaceUser(permissions.BasePermission):
         user = request.user
         if user.is_superuser:
             return True
-
-        membership = WorkspaceMember.objects.filter(user=user).first()
-
-        workspace = (
-                getattr(view, "workspace", None)
-                or (membership.workspace if membership else None))
-        if not workspace:
-            return False
-
-        return WorkspaceMember.objects.filter(
-            user=user, workspace=workspace, role__in=['user', 'manager', 'admin', 'field_manager']
-        ).exists()
+        return _member_of_workspace_with_role(user, view, ['user', 'manager', 'admin', 'field_manager'])
 
 class IsWorkspaceAdminOrSuperUser(BasePermission):
     """

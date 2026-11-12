@@ -40,7 +40,8 @@ class TimeOffRequestViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         workspace_ids = get_user_workspace_ids(user)
-        return TimeOffRequest.objects.filter(workspace_id__in=workspace_ids, is_deleted=False)
+        # The type and employee names print on every row: load them with the requests, not one query per row.
+        return TimeOffRequest.objects.filter(workspace_id__in=workspace_ids, is_deleted=False).select_related("type", "user")
 
     def perform_create(self, serializer):
         workspace = get_user_primary_workspace(self.request.user)

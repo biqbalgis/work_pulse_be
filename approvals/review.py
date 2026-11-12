@@ -133,8 +133,9 @@ def _entry_detail(item, ticket_numbers, split=None):
     }
 
 
-def week_detail(approval):
-    """Every entry of the week with what the employee entered, grouped by day, plus day and week totals."""
+def week_detail(approval, splits=None, billed=None):
+    """Every entry of the week with what the employee entered, grouped by day, plus day and week totals.
+    `splits` / `billed`: split_entries() results already worked out for (at least) these entries."""
     items = list(
         approval.items.filter(is_deleted=False, time_entry__is_deleted=False)
         .select_related(
@@ -149,13 +150,15 @@ def week_detail(approval):
         if tickets:
             ticket_numbers[item.time_entry_id] = tickets[0].ticket_number
 
-    summary = calculate_rt_ot_and_cost(items, workspace=approval.workspace)
+    # The pay-rule split is worked out once and shared by the totals and the per-entry rows.
+    if splits is None:
+        splits = split_entries([item.time_entry for item in items])
+    summary = calculate_rt_ot_and_cost(items, workspace=approval.workspace, splits=splits, billed=billed)
     day_hours = defaultdict(lambda: {"total": Decimal(0), "rt": Decimal(0), "ot": Decimal(0), "dt": Decimal(0)})
     for (day, _project), bucket in summary["breakdown"].items():
         for key in ("total", "rt", "ot", "dt"):
             day_hours[str(day)][key] += bucket[key]
 
-    splits = split_entries([item.time_entry for item in items])
     entries = [_entry_detail(item, ticket_numbers, splits.get(item.time_entry_id)) for item in items]
     days = defaultdict(list)
     for entry in entries:

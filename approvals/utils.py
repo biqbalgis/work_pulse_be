@@ -57,7 +57,7 @@ def _new_breakdown_bucket():
     }
 
 
-def calculate_rt_ot_and_cost(approval_items, workspace=None):
+def calculate_rt_ot_and_cost(approval_items, workspace=None, splits=None, billed=None):
     """
     Regular / overtime / double-time hours and labour cost for a set of TimeEntryApprovalItem, by the pay rules
     in core.utils.pay_rules (first 8 h of a day regular, the rest overtime at 1.5x; on a stat holiday the first
@@ -65,12 +65,16 @@ def calculate_rt_ot_and_cost(approval_items, workspace=None):
     included. Labour cost is what the time bills: the entry's hourly rate with the premiums of its own field
     ticket (each ticket priced on its own rows, as stored); non-billable time costs nothing here.
 
-    `workspace` is accepted for older callers and no longer changes anything.
+    `workspace` is accepted for older callers and no longer changes anything. `splits` / `billed` are the
+    split_entries() results (plain and per_ticket=True) when the caller already worked them out for many
+    approvals at once; they may cover more entries than these items.
     Returns totals plus a per-(date, project_name) breakdown dict.
     """
     items = list(approval_items)
-    splits = split_entries([item.time_entry for item in items])
-    billed = split_entries([item.time_entry for item in items], per_ticket=True)
+    if splits is None:
+        splits = split_entries([item.time_entry for item in items])
+    if billed is None:
+        billed = split_entries([item.time_entry for item in items], per_ticket=True)
     breakdown = defaultdict(_new_breakdown_bucket)
     totals = defaultdict(Decimal)
 
