@@ -7,6 +7,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from core.utils.pagination import StandardPagination
+from core.utils.workspace_utils import member_workspace_ids, user_memberships
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceUser
 from .models import TimeEntryApproval, TimeEntryApprovalItem
@@ -42,8 +43,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         )
 
         if not user.is_superuser:
-            workspace_ids = WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
-            queryset = queryset.filter(workspace_id__in=workspace_ids)
+            queryset = queryset.filter(workspace_id__in=member_workspace_ids(user))
 
         workspace_id = self.request.query_params.get("workspace")
         if workspace_id:
@@ -63,7 +63,7 @@ class TimeEntryApprovalViewSet(viewsets.ModelViewSet):
         user_ids = {a.user_id for a in approvals}
         return {
             "superuser": False,
-            "approvers": {m.workspace_id: m for m in WorkspaceMember.objects.filter(user=user, workspace_id__in=workspace_ids)},
+            "approvers": {m.workspace_id: m for m in user_memberships(user) if m.workspace_id in workspace_ids},
             "employees": {
                 (m.user_id, m.workspace_id): m
                 for m in WorkspaceMember.objects.filter(user_id__in=user_ids, workspace_id__in=workspace_ids)

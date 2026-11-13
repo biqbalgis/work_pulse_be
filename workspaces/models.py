@@ -86,3 +86,13 @@ class Holiday(SoftDeleteModel):
 
     def __str__(self):
         return f"{self.name} ({self.date})"
+
+
+# Memberships are cached per request (core.utils.workspace_utils); drop that cache whenever one changes.
+def _clear_membership_cache(*args, **kwargs):
+    from core.utils.workspace_utils import clear_membership_cache
+    clear_membership_cache()
+
+
+models.signals.post_save.connect(_clear_membership_cache, sender=WorkspaceMember, dispatch_uid="clear_membership_cache_save")
+models.signals.post_delete.connect(_clear_membership_cache, sender=WorkspaceMember, dispatch_uid="clear_membership_cache_delete")

@@ -20,6 +20,8 @@ from approvals.models import TimeEntryApproval, TimeEntryApprovalItem
 from approvals.utils import get_week_bounds
 from core.utils.envision_time import envision_local_to_utc
 from core.utils.logger import log_activity
+from core.utils.request_memo import prefill, remember
+from core.utils.workspace_utils import prefetch_memberships
 from organization_asset.models import AssetUsage, OrganizationAsset
 from projects.role_utils import labour_cost, resolve_entry_role, resolve_project_workspace
 
@@ -27,6 +29,18 @@ from .models import TimeEntry
 from .serializers import FieldTicketEntrySerializer, resolve_quantity_used
 
 User = get_user_model()
+
+
+def preload_entry_context(rows):
+    """Warm the per-request caches for a whole ticket in a couple of queries — every employee's memberships and the
+    users themselves — instead of paying for each of them again on every row. Safe to skip (rows then look
+    things up one by one); does nothing outside a request."""
+    user_ids = {row["user"] for row in rows if row.get("user")}
+    if not user_ids:
+        return
+    prefetch_memberships(user_ids)
+    for user in User.objects.filter(id__in=user_ids):
+        prefill(("user", str(user.pk)), user)
 
 
 def _resolve_entry_values(data, existing_entry=None):
@@ -37,7 +51,7 @@ def _resolve_entry_values(data, existing_entry=None):
     Raises ValueError on anything that can't be saved."""
 
     # 1. Resolve target user
-    target_user = User.objects.filter(id=data["user"]).first()
+    target_user = remember(("user", str(data["user"])), lambda: User.objects.filter(id=data["user"]).first())
     if not target_user:
         raise ValueError(f"User {data['user']} not found.")
 
@@ -86,11 +100,15 @@ def _resolve_entry_values(data, existing_entry=None):
 
 def _create_asset_usages(time_entry, assets, duration_hours):
     for asset_item in assets:
-        asset = OrganizationAsset.objects.filter(id=asset_item["asset_id"]).first()
+        asset = remember(
+            ("asset", str(asset_item["asset_id"])),
+            lambda: OrganizationAsset.objects.filter(id=asset_item["asset_id"]).first(),
+        )
         if not asset:
             raise ValueError(f"Asset {asset_item['asset_id']} not found.")
 
-        usage = AssetUsage.objects.create(
+        # price it before the first save: one INSERT instead of an INSERT followed by an UPDATE
+        usage = AssetUsage(
             time_entry=time_entry,
             asset=asset,
             quantity_used=resolve_quantity_used(asset_item),
@@ -286,6 +304,7 @@ class FieldTicketBulkEntryView(APIView):
     def post(self, request):
         serializer = FieldTicketEntrySerializer(data=request.data, many=True)
         serializer.is_valid(raise_exception=True)
+        preload_entry_context(serializer.validated_data)
 
         created_entries = []
         errors = []

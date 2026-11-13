@@ -45,6 +45,7 @@ MIDDLEWARE = [
     # otherwise every dashboard/report JSON response ships uncompressed.
     'django.middleware.gzip.GZipMiddleware',
     'corsheaders.middleware.CorsMiddleware',
+    'core.middleware.membership_cache_middleware.MembershipCacheMiddleware',
     'core.middleware.activity_middleware.ActivityLoggingMiddleware',
     'core.middleware.error_logging_middleware.ErrorLoggingMiddleware',
     'django.middleware.security.SecurityMiddleware',

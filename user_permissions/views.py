@@ -19,6 +19,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 
+from core.utils.workspace_utils import first_membership
 from users.models import User
 from workspaces.models import WorkspaceMember
 from .models import UserPermission
@@ -118,7 +119,7 @@ class MyPermissionsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        member = WorkspaceMember.objects.filter(user=request.user).first()
+        member = first_membership(request.user)
         if not member:
             return Response({"error": "You do not belong to any workspace."}, status=404)
 

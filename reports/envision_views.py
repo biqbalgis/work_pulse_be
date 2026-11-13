@@ -32,6 +32,7 @@ from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_lo
 from projects.models import Project
 from tasks.models import Task
 from time_entries.field_ticket_views import (
+    preload_entry_context,
     create_field_ticket_entry,
     sync_approval_total,
     update_field_ticket_entry,
@@ -370,6 +371,7 @@ class EnvisionFieldTicketLEMFromPayloadView(APIView):
 
         if not validated:
             return Response({"error": "At least one entry is required."}, status=400)
+        preload_entry_context(validated)
 
         # All rows must share the same project + task + date — one Field
         # Ticket LEM PDF represents exactly one project/task/day.
@@ -1109,6 +1111,7 @@ class EnvisionFieldTicketReviseView(APIView):
         payload_ids = [row["id"] for row in rows if row.get("id")]
         if len(payload_ids) != len(set(payload_ids)):
             return Response({"error": "The same time entry appears more than once."}, status=400)
+        preload_entry_context(rows)
 
         try:
             with transaction.atomic():
@@ -1121,7 +1124,9 @@ class EnvisionFieldTicketReviseView(APIView):
     def _revise(self, request, lem, rows, payload_ids):
         # Lock the ticket so two admins revising at once get R01 and R02, not two R01s.
         lem = (
-            LEMReport.objects.select_for_update()
+            # of=("self",): lock only the ticket row; Postgres rejects FOR UPDATE on the nullable
+            # (outer-joined) task/requester tables pulled in by select_related.
+            LEMReport.objects.select_for_update(of=("self",))
             .select_related("project__client", "project__workspace", "task", "requester")
             .get(pk=lem.pk)
         )

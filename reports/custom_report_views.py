@@ -37,6 +37,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.utils.envision_time import envision_day_bounds_utc, utc_to_envision_local
+from core.utils.workspace_utils import member_workspace_ids
 from django.utils import timezone
 from clients.models import Client
 from projects.models import Project
@@ -97,9 +98,7 @@ def _allowed_workspace_ids(user):
     """Workspaces where `user` may use Custom Reports: those where the user is
     still a member and their "custom_report" permission is switched on (same
     per-module flag model as the rest of the app; superusers bypass it)."""
-    member_ws = {
-        str(ws_id) for ws_id in WorkspaceMember.objects.filter(user=user).values_list("workspace_id", flat=True)
-    }
+    member_ws = {str(ws_id) for ws_id in member_workspace_ids(user)}
     granted_ws = {
         str(ws_id)
         for ws_id in UserPermission.objects.filter(user=user, custom_report=True).values_list(

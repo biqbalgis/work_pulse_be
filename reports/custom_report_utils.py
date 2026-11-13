@@ -30,6 +30,7 @@ project filter.
 
 import io
 from collections import defaultdict
+from copy import copy
 from datetime import timedelta
 from itertools import groupby
 
@@ -256,6 +257,18 @@ HOURS_FORMAT = '#,##0.00;-#,##0.00;"-"'
 
 def _cell(ws, row, col, value, font=None, fill=None, align=None, border=None, number_format=None):
     c = ws.cell(row=row, column=col, value=value)
+    if not (font or fill or align or border or number_format):
+        return c
+    # Setting five style attributes on a cell hashes five style objects every time, which dominated the report's
+    # run time (thousands of cells, only a handful of distinct looks). The first cell with a given look is styled
+    # normally; every later one just copies its resulting style record. The style tables belong to the workbook,
+    # so the memo does too. (The style objects are module constants, so their identity is a safe key.)
+    memo = ws.parent.__dict__.setdefault("_cell_style_memo", {})
+    key = (id(font), id(fill), id(align), id(border), number_format)
+    cached = memo.get(key)
+    if cached is not None:
+        c._style = copy(cached)
+        return c
     if font:
         c.font = font
     if fill:
@@ -266,6 +279,7 @@ def _cell(ws, row, col, value, font=None, fill=None, align=None, border=None, nu
         c.border = border
     if number_format:
         c.number_format = number_format
+    memo[key] = copy(c._style)
     return c
 
 

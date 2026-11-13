@@ -27,7 +27,7 @@ from .serializers import (
     _workspace_logo_url,
 )
 from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser, MANAGE_ROLES, get_member_role
-from core.utils.workspace_utils import get_user_workspace_ids, get_user_primary_workspace
+from core.utils.workspace_utils import clear_membership_cache, get_user_workspace_ids, get_user_primary_workspace
 from core.utils.logger import log_activity, log_error
 
 User = get_user_model()
@@ -202,6 +202,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 WorkspaceMember.objects.filter(user=instance, workspace_id=workspace_id).update(
                     is_deleted=True, deleted_at=timezone.now()
                 )
+                clear_membership_cache()  # queryset.update() sends no signals
 
             _blacklist_all_tokens_for(instance, request=self.request)
 

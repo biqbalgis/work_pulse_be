@@ -28,7 +28,7 @@ from .serializers import (
 from projects.role_utils import labour_cost, resolve_entry_role, resolve_project_workspace
 from workspaces.models import WorkspaceMember
 from core.utils.logger import log_activity
-from core.utils.workspace_utils import resolve_target_user
+from core.utils.workspace_utils import first_membership, resolve_target_user, user_memberships
 
 
 class TimeEntryViewSet(viewsets.ModelViewSet):
@@ -52,11 +52,9 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         if user.is_superuser:
             queryset = TimeEntry.objects.filter(is_deleted=False)
         else:
-            memberships = WorkspaceMember.objects.filter(user=user)
-            workspace_ids = memberships.values_list("workspace_id", flat=True)
-            has_workspace_wide_access = memberships.filter(
-                role__in=self.ELEVATED_ROLES
-            ).exists()
+            memberships = user_memberships(user)
+            workspace_ids = [m.workspace_id for m in memberships]
+            has_workspace_wide_access = any(m.role in self.ELEVATED_ROLES for m in memberships)
 
             queryset = TimeEntry.objects.filter(
                 workspace_id__in=workspace_ids,
@@ -119,7 +117,7 @@ class TimeEntryViewSet(viewsets.ModelViewSet):
         if target_workspace is not None:
             workspace = target_workspace
         else:
-            wm = WorkspaceMember.objects.filter(user=user).first()
+            wm = first_membership(user)
             if not wm:
                 raise ValidationError("You are not a member of any workspace.")
             workspace = wm.workspace

@@ -1,13 +1,82 @@
+from contextvars import ContextVar
+
 from workspaces.models import WorkspaceMember
+
+# ── Per-request membership cache ─────────────────────────────────────────────────────────────────────────────────
+# Almost every endpoint asks "which workspaces / what role does this user have?" several times (permission class,
+# get_queryset, serializer, ...). Each ask used to be its own query. Inside a request (see
+# core.middleware.membership_cache_middleware) the first ask loads the user's memberships and the rest reuse them.
+# Outside a request (management commands, scripts, tests calling helpers directly) nothing is cached, so behaviour
+# there is unchanged.
+_request_cache = ContextVar("workspace_membership_cache", default=None)
+
+
+def begin_request_cache():
+    return _request_cache.set({})
+
+
+def end_request_cache(token):
+    _request_cache.reset(token)
+
+
+def clear_membership_cache(*_args, **_kwargs):
+    """Call after changing memberships mid-request (also wired to WorkspaceMember save/delete signals)."""
+    cache = _request_cache.get()
+    if cache is not None:
+        cache.clear()
+
+
+def user_memberships(user):
+    """The user's (non-deleted) WorkspaceMember rows, ordered by pk — same order `.first()` used to pick from."""
+    cache = _request_cache.get()
+    if cache is not None and user.pk in cache:
+        return cache[user.pk]
+    rows = list(WorkspaceMember.objects.filter(user=user).select_related("workspace").order_by("pk"))
+    if cache is not None:
+        cache[user.pk] = rows
+    return rows
+
+
+def prefetch_memberships(user_ids):
+    """Load the memberships of many users in ONE query and seed the request cache with them (so a ticket with a
+    dozen employees costs one query, not one per employee). No-op outside a request."""
+    cache = _request_cache.get()
+    if cache is None:
+        return
+    wanted = {uid for uid in user_ids if uid not in cache}
+    if not wanted:
+        return
+    grouped = {uid: [] for uid in wanted}
+    for member in WorkspaceMember.objects.filter(user_id__in=wanted).select_related("workspace").order_by("pk"):
+        grouped[member.user_id].append(member)
+    cache.update(grouped)
+
+
+def first_membership(user):
+    rows = user_memberships(user)
+    return rows[0] if rows else None
+
+
+def member_workspace_ids(user):
+    return [m.workspace_id for m in user_memberships(user)]
+
+
+def is_member(user, workspace):
+    """True if `user` belongs to `workspace` (a Workspace or its id). Superusers are not special-cased here."""
+    workspace_id = str(getattr(workspace, "pk", workspace))
+    return any(str(m.workspace_id) == workspace_id for m in user_memberships(user))
+
 
 def get_user_workspace_ids(user):
     if user.is_superuser:
         from workspaces.models import Workspace
         return Workspace.objects.values_list('id', flat=True)
-    return WorkspaceMember.objects.filter(user=user).values_list('workspace_id', flat=True)
+    return member_workspace_ids(user)
 
 def get_user_primary_workspace(user):
-    return WorkspaceMember.objects.filter(user=user).first().workspace if not user.is_superuser else None
+    if user.is_superuser:
+        return None
+    return first_membership(user).workspace
 
 
 def resolve_target_user(request_user, target_user_id):

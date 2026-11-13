@@ -25,7 +25,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from approvals.utils import get_week_bounds
-from core.utils.workspace_utils import get_user_workspace_ids
+from core.utils.workspace_utils import get_user_workspace_ids, user_memberships
 from organization_asset.models import AssetUsage
 from projects.models import Project
 from time_entries.models import TimeEntry
@@ -80,9 +80,10 @@ class DashboardSummaryView(APIView):
         workspace_ids = _resolve_workspace_ids(request)
         start, end = get_week_bounds(timezone.now().date())
 
-        is_admin = user.is_superuser or WorkspaceMember.objects.filter(
-            user=user, workspace_id__in=workspace_ids, is_deleted=False, role__in=["admin", "manager"],
-        ).exists()
+        scope_ids = {str(w) for w in workspace_ids}
+        is_admin = user.is_superuser or any(
+            str(m.workspace_id) in scope_ids and m.role in ("admin", "manager") for m in user_memberships(user)
+        )
 
         if not is_admin:
             return Response(self._member_summary(user, start, end))
@@ -281,7 +282,7 @@ class DashboardAssetCostsView(APIView):
             time_entry__workspace_id__in=workspace_ids,
             time_entry__start_time__date__range=[start, end],
             is_deleted=False,
-        ).exclude(time_entry__project__isnull=True).select_related("asset", "time_entry__project")
+        ).exclude(time_entry__project__isnull=True)
 
         project_id = request.GET.get("project")
         if project_id:
@@ -290,16 +291,21 @@ class DashboardAssetCostsView(APIView):
         if user_id:
             qs = qs.filter(time_entry__user_id=user_id)
 
+        # Summed in the database per (project, asset name): one small row per asset instead of every usage row
+        # (with its asset, entry and project) being loaded just to be added up here.
+        rows = qs.order_by().values(
+            "time_entry__project_id", "time_entry__project__name", "asset__name",
+        ).annotate(total_cost=Sum("cost"))
+
         by_project = {}
-        for usage in qs:
-            project = usage.time_entry.project
-            bucket = by_project.setdefault(project.id, {
-                "project_id": str(project.id),
-                "project_name": project.name,
+        for row in rows:
+            project_pk = row["time_entry__project_id"]
+            bucket = by_project.setdefault(project_pk, {
+                "project_id": str(project_pk),
+                "project_name": row["time_entry__project__name"],
                 "assets": {},
             })
-            bucket["assets"].setdefault(usage.asset.name, Decimal(0))
-            bucket["assets"][usage.asset.name] += usage.cost or Decimal(0)
+            bucket["assets"][row["asset__name"]] = row["total_cost"] or Decimal(0)
 
         result = []
         for bucket in by_project.values():
@@ -314,7 +320,7 @@ class DashboardAssetCostsView(APIView):
                 "items": items,
                 "subtotal": round(float(subtotal), 2),
             })
-        result.sort(key=lambda r: r["subtotal"], reverse=True)
+        result.sort(key=lambda r: (-r["subtotal"], r["project_name"]))  # name breaks ties so the order is stable
         return Response(result)
 
 

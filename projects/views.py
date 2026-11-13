@@ -21,11 +21,11 @@ from core.utils.logger import log_activity
 from workspaces.models import WorkspaceMember
 from workspaces.permissions import IsWorkspaceAdmin, IsSuperUser, IsWorkspaceAdminOrSuperUser, require_workspace_role
 from users.models import User
-from core.utils.workspace_utils import resolve_target_user
+from core.utils.workspace_utils import first_membership, is_member, resolve_target_user
 
 
 def get_user_workspace(request):
-    member = WorkspaceMember.objects.filter(user=request.user).first()
+    member = first_membership(request.user)
     return member.workspace if member else None
 
 
@@ -33,7 +33,7 @@ def _ensure_user_in_workspace(user, workspace):
     """Raise if `user` isn't a member of `workspace` (superusers bypass)."""
     if user.is_superuser:
         return
-    if not workspace or not WorkspaceMember.objects.filter(user=user, workspace=workspace).exists():
+    if not workspace or not is_member(user, workspace):
         raise ValidationError("You do not belong to this workspace.")
 
 class ProjectViewSet(viewsets.ModelViewSet):
@@ -222,6 +222,9 @@ class ProjectRoleViewSet(viewsets.ModelViewSet):
         else:
             workspace = get_user_workspace(self.request)
             queryset = ProjectRole.objects.filter(workspace=workspace, is_deleted=False)
+
+        # the serializer reads job_title / project / workspace names on every row -> join them (was 3 queries per row)
+        queryset = queryset.select_related('job_title', 'project', 'workspace')
 
         project_id = self.request.query_params.get('project')
         if project_id:

@@ -1,7 +1,27 @@
 from rest_framework import permissions
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
+from core.utils.workspace_utils import user_memberships
 from workspaces.models import WorkspaceMember
+
+
+def _role_in_view_workspace(user, view, roles):
+    """
+    True when the user holds one of `roles` in the workspace the view targets (`view.workspace`), or — when the
+    view names none — in the user's first workspace. Same rule the three Is* classes below always used, answered
+    from the per-request membership cache instead of two queries each.
+    """
+    memberships = user_memberships(user)
+    view_workspace = getattr(view, "workspace", None)
+    if view_workspace is not None:
+        workspace_id = getattr(view_workspace, "pk", view_workspace)
+    elif memberships:
+        workspace_id = memberships[0].workspace_id
+    else:
+        return False
+    workspace_id = str(workspace_id)
+    return any(str(m.workspace_id) == workspace_id and m.role in roles for m in memberships)
+
 
 def get_user_role_in_workspace(user, workspace=None):
     """Helper function to get a user's role within a workspace."""
@@ -11,12 +31,11 @@ def get_user_role_in_workspace(user, workspace=None):
     if user.is_superuser:
         return 'superuser'
 
-    query = WorkspaceMember.objects.filter(user=user)
+    members = user_memberships(user)
     if workspace:
-        query = query.filter(workspace=workspace)
-
-    member = query.first()
-    return member.role if member else None
+        workspace_id = getattr(workspace, "pk", workspace)
+        members = [m for m in members if str(m.workspace_id) == str(workspace_id)]
+    return members[0].role if members else None
 
 
 class IsSuperUser(permissions.BasePermission):
@@ -32,15 +51,7 @@ class IsWorkspaceAdmin(permissions.BasePermission):
         if user.is_superuser:
             return True
 
-        membership = WorkspaceMember.objects.filter(user=user).first()
-
-        workspace = (
-                getattr(view, "workspace", None)
-                or (membership.workspace if membership else None))
-        if not workspace:
-            return False
-
-        return WorkspaceMember.objects.filter(user=user, workspace=workspace, role='admin').exists()
+        return _role_in_view_workspace(user, view, ('admin',))
 
 
 class IsWorkspaceManager(permissions.BasePermission):
@@ -50,18 +61,7 @@ class IsWorkspaceManager(permissions.BasePermission):
         if user.is_superuser:
             return True
 
-        membership = WorkspaceMember.objects.filter(user=user).first()
-
-        workspace = (
-                getattr(view, "workspace", None)
-                or (membership.workspace if membership else None))
-
-        if not workspace:
-            return False
-
-        return WorkspaceMember.objects.filter(
-            user=user, workspace=workspace, role__in=['manager', 'admin']
-        ).exists()
+        return _role_in_view_workspace(user, view, ('manager', 'admin'))
 
 
 class IsWorkspaceUser(permissions.BasePermission):
@@ -71,17 +71,7 @@ class IsWorkspaceUser(permissions.BasePermission):
         if user.is_superuser:
             return True
 
-        membership = WorkspaceMember.objects.filter(user=user).first()
-
-        workspace = (
-                getattr(view, "workspace", None)
-                or (membership.workspace if membership else None))
-        if not workspace:
-            return False
-
-        return WorkspaceMember.objects.filter(
-            user=user, workspace=workspace, role__in=['user', 'manager', 'admin', 'field_manager']
-        ).exists()
+        return _role_in_view_workspace(user, view, ('user', 'manager', 'admin', 'field_manager'))
 
 class IsWorkspaceAdminOrSuperUser(BasePermission):
     """
@@ -101,8 +91,8 @@ class IsWorkspaceAdminOrSuperUser(BasePermission):
             return True
 
         # Check workspace membership
-        is_member = WorkspaceMember.objects.filter(user=user).exists()
-        if not is_member:
+        memberships = user_memberships(user)
+        if not memberships:
             return False
 
         # Allow READ for any workspace member
@@ -110,7 +100,7 @@ class IsWorkspaceAdminOrSuperUser(BasePermission):
             return True
 
         # Allow WRITE only for workspace admin
-        return WorkspaceMember.objects.filter(user=user, role="admin").exists()
+        return any(m.role == "admin" for m in memberships)
 
 # ── Per-workspace role checks for WRITES ─────────────────────────────────────
 # The classes above decide access from one arbitrary membership. These helpers answer the precise question
@@ -123,11 +113,7 @@ ADMIN_ONLY = ("admin",)
 def get_member_role(user, workspace):
     """The user's active role in `workspace` (a Workspace or its id), or None."""
     workspace_id = getattr(workspace, "pk", workspace)
-    return (
-        WorkspaceMember.objects.filter(user=user, workspace_id=workspace_id, is_active=True)
-        .values_list("role", flat=True)
-        .first()
-    )
+    return next((m.role for m in user_memberships(user) if str(m.workspace_id) == str(workspace_id) and m.is_active), None)
 
 
 def has_workspace_role(user, workspace, roles=MANAGE_ROLES):
